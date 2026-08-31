@@ -235,7 +235,7 @@ impl ModulePath {
     }
 
     /// Returns the path within the vendored filesystem, if this is a vendored module.
-    fn to_vendored_path(&self) -> Option<VendoredPathBuf> {
+    pub(crate) fn to_vendored_path(&self) -> Option<VendoredPathBuf> {
         Some(
             self.search_path
                 .as_vendored_path()?
