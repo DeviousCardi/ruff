@@ -1366,26 +1366,36 @@ impl<'db> Specialization<'db> {
         self.apply_specialization_with_recursion(db, other, None)
     }
 
-    pub(super) fn apply_specialization_with_recursion(
+    fn apply_specialization_with_recursion(
         self,
         db: &'db dyn Db,
         other: Specialization<'db>,
         recursion_context: Option<&TypeRecursionContext<'db>>,
     ) -> Self {
         let env = &ProgramEnvironment::from_program(other.generic_context(db).program(db));
-        let new_specialization = self.apply_type_mapping_impl(
+        self.apply_specialization_impl(
+            db,
+            other,
+            &ApplyTypeMappingVisitor::new(env).with_recursion_context(recursion_context),
+        )
+    }
+
+    /// Compose specializations while preserving the enclosing transformation's recursion guard.
+    pub(super) fn apply_specialization_impl(
+        self,
+        db: &'db dyn Db,
+        other: Specialization<'db>,
+        visitor: &ApplyTypeMappingVisitor<'_, 'db>,
+    ) -> Self {
+        let specialized = self.apply_type_mapping_impl(
             db,
             &TypeMapping::ApplySpecialization(ApplySpecialization::specialization(other)),
             &[],
-            &ApplyTypeMappingVisitor::new(env).with_recursion_context(recursion_context),
+            visitor,
         );
         match other.materialization_kind(db) {
-            None => new_specialization,
-            Some(materialization_kind) => new_specialization.materialize_impl(
-                db,
-                materialization_kind,
-                &ApplyTypeMappingVisitor::new(env).with_recursion_context(recursion_context),
-            ),
+            None => specialized,
+            Some(kind) => specialized.materialize_impl(db, kind, visitor),
         }
     }
 
@@ -1417,6 +1427,9 @@ impl<'db> Specialization<'db> {
         let mut new_materialization_kind = self.materialization_kind(db);
         let types = self.map_types(db, |i, typevar, ty| {
             let tcx = TypeContext::new(tcx.get(i).copied());
+            if type_mapping.used_in_cycle_recovery() {
+                return ty.apply_type_mapping_impl(db, type_mapping, tcx, visitor);
+            }
             match (typevar.variance(db), type_mapping) {
                 (
                     TypeVarVariance::Invariant,
@@ -1425,7 +1438,6 @@ impl<'db> Specialization<'db> {
                         materialization_kind,
                     },
                 ) => {
-                    let env = visitor.env;
                     // An invariant type argument cannot be materialized in isolation. Keep the
                     // specialized argument and record the materialization on this specialization.
                     // Comparing both mappings distinguishes substituted gradual types from
@@ -1435,18 +1447,12 @@ impl<'db> Specialization<'db> {
                         db,
                         &TypeMapping::ApplySpecialization(*specialization),
                         tcx,
-                        &ApplyTypeMappingVisitor::new(env)
-                            .with_recursion_context(visitor.recursion_context),
+                        &visitor.fresh(),
                     );
 
                     if new_materialization_kind.is_none() {
-                        let materialized = ty.apply_type_mapping_impl(
-                            db,
-                            type_mapping,
-                            tcx,
-                            &ApplyTypeMappingVisitor::new(env)
-                                .with_recursion_context(visitor.recursion_context),
-                        );
+                        let materialized =
+                            ty.apply_type_mapping_impl(db, type_mapping, tcx, &visitor.fresh());
                         if specialized != materialized {
                             new_materialization_kind = Some(*materialization_kind);
                         }

@@ -3038,6 +3038,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let db = self.db();
 
         match object_ty {
+            Type::Recursive(recursive) => recursive.map_or(db, env, true, |unfolded| {
+                self.validate_attribute_deletion(target, unfolded, attribute, emit_diagnostics)
+            }),
+            Type::RecursiveVar(_) => {
+                unreachable!("semantic operation on an unbound recursive variable")
+            }
             Type::Union(union) => {
                 for element_ty in union.elements(db) {
                     if !self.validate_attribute_deletion(
@@ -5492,6 +5498,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             kind: CallableTypeKind,
         ) -> Option<Type<'d>> {
             match ty {
+                Type::Recursive(recursive) => recursive.map_or(db, env, None, |unfolded| {
+                    propagate_callable_kind(db, env, unfolded, kind)
+                }),
+                Type::RecursiveVar(_) => {
+                    unreachable!("semantic operation on an unbound recursive variable")
+                }
                 Type::Callable(callable) => Some(Type::Callable(callable.with_kind(db, kind))),
                 Type::Union(union) => union.try_map(db, env, |element| {
                     propagate_callable_kind(db, env, *element, kind)
@@ -11194,6 +11206,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         };
 
         match (op, operand_type) {
+            (_, Type::RecursiveVar(_)) => {
+                unreachable!("semantic operation on an unbound recursive variable")
+            }
             (ast::UnaryOp::Invert | ast::UnaryOp::UAdd | ast::UnaryOp::USub, Type::Dynamic(_))
             | (_, Type::Divergent(_)) => operand_type,
             (_, Type::Never) => Type::Never,
@@ -11264,6 +11279,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     })
                     .negate(),
             ),
+            (_, Type::Recursive(_)) => fallback_unary_expression_type(),
             // Handle constrained TypeVars specially: check each constraint individually.
             //
             // TODO: We expect to replace this with more general support once we migrate to the new

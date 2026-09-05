@@ -304,6 +304,14 @@ impl<'db> TupleType<'db> {
         tcx: TypeContext<'db>,
         visitor: &ApplyTypeMappingVisitor<'_, 'db>,
     ) -> Self {
+        if type_mapping.used_in_cycle_recovery() {
+            return TupleType::new_internal(
+                db,
+                self.program(db),
+                self.tuple(db)
+                    .apply_type_mapping_impl(db, type_mapping, tcx, visitor),
+            );
+        }
         TupleType::new(
             db,
             visitor.env,
