@@ -1063,6 +1063,73 @@ def f[S, T, U]():
     ...
 ```
 
+## Solving dependent type variables
+
+### Finite dependencies
+
+When a type variable has a concrete solution, other solutions substitute it even inside a container.
+The order in which the constraints are written does not change the inferred types.
+
+```py
+from ty_extensions._internal import ConstraintSet
+
+def forward[T, U]():
+    constraints = ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(U, int)
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=tuple[int], U=int]]
+
+def reverse[T, U]():
+    constraints = ConstraintSet.equality(U, int) & ConstraintSet.equality(T, tuple[U])
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[U=int, T=tuple[int]]]
+```
+
+Substitution follows the entire dependency chain, preserving each container's structure.
+
+```py
+def chain[T, U, V]():
+    constraints = ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(U, list[V]) & ConstraintSet.equality(V, int)
+    # revealed: tuple[Solution[T=tuple[list[int]], U=list[int], V=int]]
+    reveal_type(constraints.solutions(inferable=tuple[T, U, V]))
+```
+
+### Dependencies in recursive alias arguments
+
+A solution can refer to a recursive alias whose type argument is another solved variable. Both PEP
+695 aliases and implicit aliases preserve that argument's concrete type.
+
+```py
+from typing import TypeVar
+from ty_extensions._internal import ConstraintSet
+
+type Explicit[V] = V | tuple[Explicit[V]]
+
+V = TypeVar("V")
+Implicit = V | tuple["Implicit[V]"]
+
+def explicit[T, U]():
+    constraints = ConstraintSet.equality(T, Explicit[U]) & ConstraintSet.equality(U, int)
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=Explicit[int], U=int]]
+
+def implicit[T, U]():
+    constraints = ConstraintSet.equality(T, Implicit[U]) & ConstraintSet.equality(U, int)
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=Implicit[int], U=int]]
+```
+
+### Correlated alternatives
+
+Each alternative substitutes its own bindings. The tuple element remains paired with the
+corresponding solution for `U`, rather than combining `int` and `str` across alternatives.
+
+```py
+from ty_extensions._internal import ConstraintSet
+
+def alternatives[T, U]():
+    constraints = (ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(U, int)) | (
+        ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(U, str)
+    )
+    # revealed: tuple[Solution[T=tuple[int], U=int], Solution[T=tuple[str], U=str]]
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))
+```
+
 ## Other simplifications
 
 ### Ordering of intersection and union elements

@@ -4336,7 +4336,7 @@ impl<'db> PathBounds<'db> {
         env: &ProgramEnvironment<'db>,
         builder: &ConstraintSetBuilder<'db>,
     ) -> Solutions<'db> {
-        self.solve_with(|_variance, path_bound| {
+        self.solve_with(db, env, |_variance, path_bound| {
             PathBounds::default_solve(db, env, builder, path_bound)
         })
     }
@@ -4347,15 +4347,19 @@ impl<'db> PathBounds<'db> {
     /// the path's available bindings, but marks the resulting path family as incomplete.
     pub(crate) fn solve_with(
         &self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
         choose: impl FnMut(TypeVarVariance, &PathBound<'db>) -> PathBoundSolution<'db>,
     ) -> Solutions<'db> {
-        let Ok(solutions) = self.try_solve_with(choose, |_| Ok::<(), Infallible>(()));
+        let Ok(solutions) = self.try_solve_with(db, env, choose, |_| Ok::<(), Infallible>(()));
         solutions
     }
 
     /// Checks each retained solution before collecting it or solving the next path.
     fn try_solve_with<E>(
         &self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
         mut choose: impl FnMut(TypeVarVariance, &PathBound<'db>) -> PathBoundSolution<'db>,
         mut check_solution: impl FnMut(&Solution<'db>) -> Result<(), E>,
     ) -> Result<Solutions<'db>, E> {
@@ -4368,7 +4372,8 @@ impl<'db> PathBounds<'db> {
         let mut solutions = Vec::with_capacity(paths.len());
         let mut exceeded_budget = false;
         for path in paths {
-            let Some((solution, path_exceeded_budget)) = Self::solve_path_with(path, &mut choose)
+            let Some((solution, path_exceeded_budget)) =
+                Self::solve_path_with(db, env, path, &mut choose)
             else {
                 continue;
             };
@@ -4390,6 +4395,8 @@ impl<'db> PathBounds<'db> {
     /// Solves one complete path, retaining whether any of its bindings used a fallback.
     /// A later unsatisfiable bound rejects the path even if an earlier bound exhausted its budget.
     fn solve_path_with(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
         path: &[PathBound<'db>],
         choose: &mut impl FnMut(TypeVarVariance, &PathBound<'db>) -> PathBoundSolution<'db>,
     ) -> Option<(Solution<'db>, bool)> {
@@ -4412,6 +4419,7 @@ impl<'db> PathBounds<'db> {
                 });
             }
         }
+        TypeVarSolution::resolve_dependencies(db, env, &mut solution);
         Some((solution, exceeded_budget))
     }
 

@@ -615,6 +615,8 @@ class E: ...
 
         assert_eq!(
             paths.try_fold_with(
+                db,
+                &env,
                 |_, bound| PathBounds::default_solve(db, &env, &builder, bound),
                 Type::object(),
                 &mut ProjectionTypeBudget::new(7),

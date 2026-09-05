@@ -1,13 +1,75 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
 use crate::types::constraints::paths::PathAssignments;
 use crate::types::constraints::{
     ALWAYS_FALSE, ALWAYS_TRUE, ConstraintBoundsBuilder, ConstraintId, ConstraintSetStorage, NodeId,
-    PathBounds, SolutionLimits,
+    PathBounds, SolutionLimits, TypeVarSolution,
 };
-use crate::types::{BoundTypeVarInstance, Type};
+use crate::types::{
+    BoundTypeVarInstance, GenericContext, Type, any_over_type_including_alias_arguments,
+};
 use crate::{Db, FxIndexMap, FxIndexSet, ProgramEnvironment};
+
+impl<'db> TypeVarSolution<'db> {
+    /// Substitute resolved bindings within one solution path, preserving correlations between paths.
+    /// Bindings that depend on a cycle retain symbolic references for recursive solving.
+    pub(super) fn resolve_dependencies(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        solution: &mut [Self],
+    ) {
+        let variables: FxIndexMap<_, _> = solution
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| (binding.bound_typevar.identity(db), index))
+            .collect();
+        let mut dependents = vec![Vec::new(); solution.len()];
+        let mut unresolved = Vec::with_capacity(solution.len());
+        for (index, binding) in solution.iter().enumerate() {
+            let dependencies = RefCell::new(FxIndexSet::default());
+            any_over_type_including_alias_arguments(db, env, binding.solution, |ty| {
+                if let Type::TypeVar(typevar) = ty
+                    && let Some(dependency) = variables.get(&typevar.identity(db))
+                {
+                    dependencies.borrow_mut().insert(*dependency);
+                }
+                false
+            });
+            let dependencies = dependencies.into_inner();
+            unresolved.push(dependencies.len());
+            for dependency in dependencies {
+                dependents[dependency].push(index);
+            }
+        }
+
+        let mut ready: VecDeque<_> = unresolved
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect();
+        while let Some(index) = ready.pop_front() {
+            if dependents[index].is_empty() {
+                continue;
+            }
+            // Specialize stored alias arguments without expanding recursive alias bodies.
+            let context =
+                GenericContext::from_typevar_instances(db, env, [solution[index].bound_typevar]);
+            let specialization = context.specialize(db, &[solution[index].solution]);
+            for &dependent in &dependents[index] {
+                solution[dependent].solution = solution[dependent]
+                    .solution
+                    .apply_specialization(db, specialization);
+                unresolved[dependent] -= 1;
+                if unresolved[dependent] == 0 {
+                    ready.push_back(dependent);
+                }
+            }
+        }
+    }
+}
 
 pub(super) struct SolutionWalker<'db> {
     source_orders: FxIndexSet<ConstraintId>,
