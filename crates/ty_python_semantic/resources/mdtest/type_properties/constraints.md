@@ -1091,6 +1091,68 @@ def chain[T, U, V]():
     reveal_type(constraints.solutions(inferable=tuple[T, U, V]))
 ```
 
+### Dependencies from shared bounds
+
+Two equalities for the same variable also constrain type variables inside their bounds. Equating `T`
+with both `tuple[U]` and `tuple[int]` requires `U` to be `int`, regardless of the order of the
+equalities.
+
+```py
+from typing import Callable
+from ty_extensions._internal import ConstraintSet
+
+def forward[T, U]():
+    constraints = ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(T, tuple[int])
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=tuple[int], U=int]]
+
+def reverse[T, U]():
+    constraints = ConstraintSet.equality(T, tuple[int]) & ConstraintSet.equality(T, tuple[U])
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=tuple[int], U=int]]
+```
+
+The same relationship holds for invariant containers and contravariant callable parameters.
+
+```py
+def invariant[T, U]():
+    constraints = ConstraintSet.equality(T, list[U]) & ConstraintSet.equality(T, list[int])
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=list[int], U=int]]
+
+def contravariant[T, U]():
+    constraints = ConstraintSet.equality(T, Callable[[U], None]) & ConstraintSet.equality(T, Callable[[int], None])
+    # revealed: tuple[Solution[T=(int, /) -> None, U=int]]
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))
+```
+
+A lower bound and an equality can also constrain the element of an invariant container, without
+requiring both input constraints to be equalities.
+
+```py
+def lower_bound[T, U]():
+    constraints = ConstraintSet.lower_bound(list[U], T) & ConstraintSet.equality(T, list[int])
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))  # revealed: tuple[Solution[T=list[int], U=int]]
+```
+
+Each alternative constrains its own tuple element; the solutions preserve that correlation.
+
+```py
+def alternatives[T, U]():
+    constraints = ConstraintSet.equality(T, tuple[U]) & (
+        ConstraintSet.equality(T, tuple[int]) | ConstraintSet.equality(T, tuple[str])
+    )
+    # revealed: tuple[Solution[T=tuple[int], U=int], Solution[T=tuple[str], U=str]]
+    reveal_type(constraints.solutions(inferable=tuple[T, U]))
+```
+
+Excluding the required element type makes the combined constraints unsatisfiable.
+
+```py
+from ty_extensions import static_assert
+
+def excluded[T, U]():
+    constraints = ConstraintSet.equality(T, tuple[U]) & ConstraintSet.equality(T, tuple[int])
+    static_assert(~(constraints & ~ConstraintSet.equality(U, int)))
+```
+
 ### Dependencies in recursive alias arguments
 
 A solution can refer to a recursive alias whose type argument is another solved variable. Both PEP
@@ -1422,7 +1484,7 @@ class Second:
 
 def ambiguous[T]():
     constraints = ConstraintSet.equality(T, First.Item | Second.Item | tuple[T])
-    # revealed: tuple[Solution[T=μa0. tuple[a0] | mdtest_snippet.Second.Item | mdtest_snippet.First.Item]]
+    # revealed: tuple[Solution[T=μa0. tuple[a0] | mdtest_snippet.First.Item | mdtest_snippet.Second.Item]]
     reveal_type(constraints.solutions(inferable=tuple[T]))
 ```
 
