@@ -186,9 +186,9 @@ def identity[U](value: U) -> U:
     return value
 
 recursive = fixed(identity)
-reveal_type(recursive)  # revealed: (μa0. tuple[a0])
-reveal_type(recursive[0])  # revealed: (μa0. tuple[a0])
-reveal_type(recursive[0][0])  # revealed: (μa0. tuple[a0])
+reveal_type(recursive)  # revealed: μa0. tuple[a0]
+reveal_type(recursive[0])  # revealed: μa0. tuple[a0]
+reveal_type(recursive[0][0])  # revealed: μa0. tuple[a0]
 
 def takes_int(value: int) -> None: ...
 

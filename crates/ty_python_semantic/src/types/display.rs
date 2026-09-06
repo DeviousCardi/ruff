@@ -717,8 +717,21 @@ impl<'db> Type<'db> {
         env: &'env ProgramEnvironment<'db>,
         settings: DisplaySettings<'db>,
     ) -> DisplayType<'env, 'db> {
+        // Unnamed entries in an already displayed graph expand inline. Resolve
+        // them before deciding whether the displayed expression needs parentheses.
+        let ty = if let Type::Recursive(recursive) = self
+            && !settings.recursive_binders.contains(&recursive)
+            && settings
+                .recursive_binders
+                .iter()
+                .any(|binder| recursive.shares_graph(db, *binder))
+        {
+            recursive.unfold(db, env)
+        } else {
+            self
+        };
         DisplayType {
-            ty: self,
+            ty,
             db,
             env,
             settings,
@@ -1696,17 +1709,6 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                 {
                     return write!(f, "a{index}");
                 }
-                if self
-                    .settings
-                    .recursive_binders
-                    .iter()
-                    .any(|binder| recursive.shares_graph(db, *binder))
-                {
-                    return recursive
-                        .unfold(db, self.env)
-                        .display_with(db, self.env, self.settings.clone())
-                        .fmt_detailed(f);
-                }
                 let members = recursive.members(db);
                 let mut settings = self.settings.clone();
                 let offset = settings.recursive_binders.len();
@@ -1717,14 +1719,14 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     .chain(members.iter().copied())
                     .collect();
                 if members.len() == 1 {
-                    write!(f, "(μa{offset}. ")?;
+                    write!(f, "μa{offset}. ")?;
                     recursive
                         .unfold(db, self.env)
                         .display_with(db, self.env, settings)
                         .fmt_detailed(f)?;
-                    return f.write_char(')');
+                    return Ok(());
                 }
-                f.write_str("(letrec ")?;
+                f.write_str("letrec ")?;
                 for (index, member) in members.into_iter().enumerate() {
                     if index != 0 {
                         f.write_str("; ")?;
@@ -1735,7 +1737,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                         .display_with(db, self.env, settings.clone())
                         .fmt_detailed(f)?;
                 }
-                write!(f, " in a{offset})")
+                write!(f, " in a{offset}")
             }
             Type::NewTypeInstance(newtype) => f.with_type(self.ty).write_str(newtype.name(db)),
         }
@@ -3608,15 +3610,23 @@ struct DisplayMaybeParenthesizedType<'env, 'db> {
 impl<'db> FmtDetailed<'db> for DisplayMaybeParenthesizedType<'_, 'db> {
     fn fmt_detailed(&self, f: &mut TypeWriter<'_, '_, 'db>) -> fmt::Result {
         let db = self.db;
+        let display = self.ty.display_with(db, self.env, self.settings.clone());
         let write_parentheses = |f: &mut TypeWriter<'_, '_, 'db>| {
             f.set_invalid_type_annotation();
             f.write_char('(')?;
-            self.ty
-                .display_with(db, self.env, self.settings.clone())
-                .fmt_detailed(f)?;
+            display.fmt_detailed(f)?;
             f.write_char(')')
         };
-        match self.ty {
+        match display.ty {
+            // A recursive binder extends to the end of its body, more loosely
+            // than unions, intersections, negation, or member access. A reference
+            // to an enclosing binder is just an atomic name such as `a0`.
+            Type::Recursive(recursive)
+                if recursive.alias(db).is_none()
+                    && !self.settings.recursive_binders.contains(&recursive) =>
+            {
+                write_parentheses(f)
+            }
             ty if should_parenthesize_callable_type(ty, db) => write_parentheses(f),
             Type::KnownBoundMethod(_) | Type::FunctionLiteral(_) | Type::BoundMethod(_) => {
                 write_parentheses(f)
@@ -3632,10 +3642,7 @@ impl<'db> FmtDetailed<'db> for DisplayMaybeParenthesizedType<'_, 'db> {
             Type::Intersection(intersection) if !intersection.has_one_element(db) => {
                 write_parentheses(f)
             }
-            _ => self
-                .ty
-                .display_with(db, self.env, self.settings.clone())
-                .fmt_detailed(f),
+            _ => display.fmt_detailed(f),
         }
     }
 }

@@ -45,10 +45,10 @@ class Containers:
         self.b = {"next": other.c}
         self.c = (other.a, 1)
 
-reveal_type(Containers().a)  # revealed: (μa0. list[dict[str, tuple[a0, int]]])
-reveal_type(Containers().b)  # revealed: (μa0. dict[str, tuple[list[a0], int]])
-reveal_type(Containers().c)  # revealed: (μa0. tuple[list[dict[str, a0]], int])
-reveal_type(Containers().a[0]["next"][0])  # revealed: (μa0. list[dict[str, tuple[a0, int]]])
+reveal_type(Containers().a)  # revealed: μa0. list[dict[str, tuple[a0, int]]]
+reveal_type(Containers().b)  # revealed: μa0. dict[str, tuple[list[a0], int]]
+reveal_type(Containers().c)  # revealed: μa0. tuple[list[dict[str, a0]], int]
+reveal_type(Containers().a[0]["next"][0])  # revealed: μa0. list[dict[str, tuple[a0, int]]]
 ```
 
 ## Mutually recursive attributes with initial values

@@ -1822,7 +1822,7 @@ def nest(n: int):
     value = 0
     for _ in range(n):
         value = (value,)
-    reveal_type(value)  # revealed: (μa0. Literal[0] | tuple[a0])
+    reveal_type(value)  # revealed: μa0. Literal[0] | tuple[a0]
 ```
 
 ### Mutually recursive loop bindings
@@ -1838,9 +1838,9 @@ def build(n: int):
         previous = left
         left = (right, 1)
         right = (previous, "end")
-    # revealed: (μa0. tuple[tuple[a0, Literal["end"]] | Literal["start"], Literal[1]] | Literal[1])
+    # revealed: μa0. tuple[tuple[a0, Literal["end"]] | Literal["start"], Literal[1]] | Literal[1]
     reveal_type(left)
-    # revealed: (μa0. tuple[tuple[a0, Literal[1]] | Literal[1], Literal["end"]] | Literal["start"])
+    # revealed: μa0. tuple[tuple[a0, Literal[1]] | Literal[1], Literal["end"]] | Literal["start"]
     reveal_type(right)
 ```
 

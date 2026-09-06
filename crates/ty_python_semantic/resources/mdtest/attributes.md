@@ -4510,7 +4510,7 @@ class D:
     def copy(self, other: "D"):
         self.x = other.x
 
-reveal_type(D().x)  # revealed: (μa0. a0)
+reveal_type(D().x)  # revealed: μa0. a0
 ```
 
 If there is an annotation for a name, we don't try to infer any type from the RHS of assignments to
@@ -4716,7 +4716,7 @@ class NestedLists:
     def f(self: "NestedLists"):
         self.x = [self.x]
 
-reveal_type(NestedLists().x)  # revealed: (μa0. list[a0] | int)
+reveal_type(NestedLists().x)  # revealed: μa0. list[a0] | int
 
 class NestedMixed:
     def f(self: "NestedMixed"):
@@ -4725,7 +4725,7 @@ class NestedMixed:
     def g(self: "NestedMixed"):
         self.x = {self.x}
 
-reveal_type(NestedMixed().x)  # revealed: (μa0. set[a0] | list[a0])
+reveal_type(NestedMixed().x)  # revealed: μa0. set[a0] | list[a0]
 ```
 
 And cases where the types originate from annotations:
@@ -4742,7 +4742,7 @@ class NestedLists2:
     def f(self: "NestedLists2"):
         self.x = make_list(self.x)
 
-reveal_type(NestedLists2().x)  # revealed: (μa0. list[a0])
+reveal_type(NestedLists2().x)  # revealed: μa0. list[a0]
 ```
 
 Overload resolution can lose precision during inference and contribute `Unknown`. The recursive list
@@ -4762,8 +4762,8 @@ class NestedListsConcat:
         self.x = [self.x] + []
         self.y = [self.y].__add__(y)
 
-reveal_type(NestedListsConcat().x)  # revealed: (μa0. list[a0] | list[int] | Unknown)
-reveal_type(NestedListsConcat().y)  # revealed: (μa0. list[a0] | list[int] | Unknown)
+reveal_type(NestedListsConcat().x)  # revealed: μa0. list[a0] | list[int] | Unknown
+reveal_type(NestedListsConcat().y)  # revealed: μa0. list[a0] | list[int] | Unknown
 ```
 
 ### Builtin types attributes
@@ -4920,8 +4920,8 @@ class C:
     def f(self, other: "C"):
         self.x = (other.x, 1)
 
-reveal_type(C().x)  # revealed: (μa0. tuple[a0, int])
-reveal_type(C().x[0])  # revealed: (μa0. tuple[a0, int])
+reveal_type(C().x)  # revealed: μa0. tuple[a0, int]
+reveal_type(C().x[0])  # revealed: μa0. tuple[a0, int]
 ```
 
 An initial value remains an alternative at every recursive level:
@@ -4934,7 +4934,7 @@ class WithInitial:
     def update(self, other: "WithInitial"):
         self.value = (other.value, "b")
 
-reveal_type(WithInitial().value)  # revealed: (μa0. int | tuple[a0, str])
+reveal_type(WithInitial().value)  # revealed: μa0. int | tuple[a0, str]
 ```
 
 This also works if the tuple is not constructed directly:
@@ -4951,7 +4951,7 @@ class D:
     def f(self, other: "D"):
         self.x = make_tuple(other.x)
 
-reveal_type(D().x)  # revealed: (μa0. tuple[a0, Literal[1]])
+reveal_type(D().x)  # revealed: μa0. tuple[a0, Literal[1]]
 ```
 
 Multiple elements can refer to the same recursive type:
@@ -4964,7 +4964,7 @@ class E:
     def f(self: "E"):
         self.x = duplicate(self.x)
 
-reveal_type(E().x)  # revealed: (μa0. tuple[a0, a0])
+reveal_type(E().x)  # revealed: μa0. tuple[a0, a0]
 ```
 
 And it also works for homogeneous tuples:
@@ -4977,7 +4977,7 @@ class F:
     def f(self, other: "F"):
         self.x = make_homogeneous_tuple(other.x)
 
-reveal_type(F().x)  # revealed: (μa0. tuple[a0, ...])
+reveal_type(F().x)  # revealed: μa0. tuple[a0, ...]
 ```
 
 The `tuple()` call inspects its iterable argument during inference. This cycle still uses
