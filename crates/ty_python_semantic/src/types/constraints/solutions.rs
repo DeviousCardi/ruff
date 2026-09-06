@@ -10,8 +10,8 @@ use crate::types::constraints::{
 };
 use crate::types::typevar::TypeVarSet;
 use crate::types::{
-    BoundTypeVarInstance, GenericContext, IntersectionBuilder, RecursiveType, Type, UnionType,
-    any_over_type_including_alias_arguments,
+    BoundTypeVarInstance, GenericContext, IntersectionBuilder, IntersectionType, RecursiveType,
+    Specialization, Type, UnionType, any_over_type_including_alias_arguments,
 };
 use crate::{Db, FxIndexMap, FxIndexSet, ProgramEnvironment};
 
@@ -19,7 +19,7 @@ impl<'db> TypeVarSolution<'db> {
     /// Solve dependencies within one path, preserving correlations between paths.
     /// Acyclic bindings are substituted in dependency order. Remaining equations
     /// are closed together as shared recursive graphs.
-    /// Returns whether any recursive binder was introduced.
+    /// Returns whether equality simplification or recursive closure requires revalidating bounds.
     pub(super) fn resolve_dependencies(
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
@@ -27,32 +27,24 @@ impl<'db> TypeVarSolution<'db> {
         bounds: &[PathBound<'db>],
         inferable: TypeVarSet<'db>,
     ) -> bool {
-        let graph = SolutionDependencies::new(db, env, solution);
-        let mut unresolved: Vec<_> = graph.dependencies.iter().map(Vec::len).collect();
-        let mut equations = vec![None; solution.len()];
-        // Pin cyclic equations before substituting finite dependencies, while their
-        // selected lower bounds can still be compared with the original upper bounds.
-        // Keep these candidates separate until recursive closure succeeds.
-        for component in graph.components(&unresolved) {
-            if !graph.is_cyclic(&component)
-                || component
-                    .iter()
-                    .any(|index| !solution[*index].bound_typevar.is_inferable(db, inferable))
+        let bounds: FxIndexMap<_, _> = bounds
+            .iter()
+            .map(|bound| (bound.bound_typevar, bound))
+            .collect();
+        // Pin equalities before substitution, including finite dependents of a cycle.
+        // Otherwise equal variables can retain different expansions of the same equation.
+        let mut simplified = false;
+        for binding in solution.iter_mut() {
+            if binding.bound_typevar.is_inferable(db, inferable)
+                && let Some(bound) = bounds.get(&binding.bound_typevar)
             {
-                continue;
-            }
-            for index in component {
-                let binding = &solution[index];
-                if let Some(bound) = bounds.iter().find(|bound| {
-                    bound.bound_typevar.identity(db) == binding.bound_typevar.identity(db)
-                }) {
-                    let equation = bound.simplify_equation(db, env, binding.solution);
-                    if equation != binding.solution {
-                        equations[index] = Some(equation);
-                    }
-                }
+                let equation = bound.simplify_equation(db, env, binding.solution);
+                simplified |= equation != binding.solution;
+                binding.solution = equation;
             }
         }
+        let graph = SolutionDependencies::new(db, env, solution);
+        let mut unresolved: Vec<_> = graph.dependencies.iter().map(Vec::len).collect();
 
         let mut ready: VecDeque<_> = unresolved
             .iter()
@@ -71,9 +63,6 @@ impl<'db> TypeVarSolution<'db> {
                 solution[dependent].solution = solution[dependent]
                     .solution
                     .apply_specialization(db, specialization);
-                if let Some(equation) = &mut equations[dependent] {
-                    *equation = equation.apply_specialization(db, specialization);
-                }
                 unresolved[dependent] -= 1;
                 if unresolved[dependent] == 0 {
                     ready.push_back(dependent);
@@ -91,10 +80,7 @@ impl<'db> TypeVarSolution<'db> {
             }
             let mut candidate: Vec<_> = component
                 .iter()
-                .map(|index| Self {
-                    bound_typevar: solution[*index].bound_typevar,
-                    solution: equations[*index].unwrap_or(solution[*index].solution),
-                })
+                .map(|index| solution[*index].clone())
                 .collect();
             let is_cycle = graph.is_cyclic(&component);
             let newly_recursive = is_cycle && Self::close_component(db, env, &mut candidate);
@@ -113,7 +99,6 @@ impl<'db> TypeVarSolution<'db> {
             let specialization = context.specialize(db, &types);
             for (index, binding) in component.iter().zip(candidate) {
                 solution[*index] = binding;
-                equations[*index] = None;
             }
             // All remaining components see this component's closed solutions.
             for (index, binding) in solution.iter_mut().enumerate() {
@@ -122,9 +107,6 @@ impl<'db> TypeVarSolution<'db> {
                     && binding.bound_typevar.is_inferable(db, inferable)
                 {
                     binding.solution = binding.solution.apply_specialization(db, specialization);
-                    if let Some(equation) = &mut equations[index] {
-                        *equation = equation.apply_specialization(db, specialization);
-                    }
                 }
             }
         }
@@ -141,7 +123,7 @@ impl<'db> TypeVarSolution<'db> {
                 }
             }
         }
-        recursive
+        recursive || simplified
     }
 
     /// Simplify Boolean dependencies, then bind constructor edges simultaneously.
@@ -270,6 +252,165 @@ impl<'db> TypeVarSolution<'db> {
 }
 
 impl<'db> PathBound<'db> {
+    /// Variables related in both subtype directions must satisfy their declarations jointly,
+    /// including when no constructor or concrete bound fixes their shared type yet.
+    pub(super) fn equal_variables(
+        db: &'db dyn Db,
+        path: &[Self],
+        inferable: TypeVarSet<'db>,
+    ) -> Vec<BoundTypeVarInstance<'db>> {
+        let graph = SolutionDependencies::from_bounds(db, path, inferable);
+        graph
+            .components(&vec![1; path.len()])
+            .into_iter()
+            .filter(|component| component.len() > 1)
+            .flatten()
+            .map(|index| path[index].bound_typevar)
+            .collect()
+    }
+
+    /// Combine the bounds of variables proven equal on this path before selecting their types.
+    /// Constructor dependencies do not imply equality and remain available for recursive closure.
+    pub(super) fn merge_equalities(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        path: &[Self],
+        inferable: TypeVarSet<'db>,
+    ) -> Option<EqualityClasses<'db>> {
+        let graph = SolutionDependencies::from_bounds(db, path, inferable);
+        let components = graph.components(&vec![1; path.len()]);
+        let mut representatives: Vec<_> = path.iter().map(|bound| bound.bound_typevar).collect();
+        let mut groups = Vec::with_capacity(components.len());
+        for component in components {
+            if component.len() == 1 {
+                groups.push(component);
+                continue;
+            }
+            let representative = path[component[0]].bound_typevar;
+            let context = GenericContext::from_typevar_instances(
+                db,
+                env,
+                component
+                    .iter()
+                    .map(|index| path[*index].bound_typevar)
+                    .filter(|variable| variable.identity(db) != representative.identity(db)),
+            );
+            let types = vec![Type::TypeVar(representative); context.len(db)];
+            let merged =
+                Self::merge_bounds(db, env, path, &component, context.specialize(db, &types));
+            if merged.evidence_lower.is_none()
+                && merged.validity_lower.is_never()
+                && merged.upper.is_empty()
+            {
+                // A bare equality does not choose a free parameter's binding context or
+                // declaration. Keep those identities until the class acquires a bound.
+                groups.extend(component.into_iter().map(|index| vec![index]));
+                continue;
+            }
+            for &index in &component {
+                representatives[index] = representative;
+            }
+            groups.push(component);
+        }
+        if groups.iter().all(|component| component.len() == 1) {
+            return None;
+        }
+        let substitutions: FxIndexMap<_, _> = path
+            .iter()
+            .zip(&representatives)
+            .filter(|(bound, representative)| {
+                bound.bound_typevar.identity(db) != representative.identity(db)
+            })
+            .map(|(bound, representative)| (bound.bound_typevar.identity(db), *representative))
+            .collect();
+        let context = GenericContext::from_typevar_instances(
+            db,
+            env,
+            path.iter()
+                .map(|bound| bound.bound_typevar)
+                .filter(|variable| substitutions.contains_key(&variable.identity(db))),
+        );
+        let types: Vec<_> = context
+            .variables(db)
+            .map(|variable| Type::TypeVar(substitutions[&variable.identity(db)]))
+            .collect();
+        let specialization = context.specialize(db, &types);
+        let mut result = path.to_vec();
+        for component in &groups {
+            let representative = representatives[component[0]];
+            let mut merged = Self::merge_bounds(db, env, path, component, specialization);
+            if merged.evidence_lower.is_none()
+                && merged.validity_lower.is_never()
+                && merged.upper.is_empty()
+            {
+                // An identity equation remains a free parameter.
+                merged = Self::exact(representative, Type::TypeVar(representative));
+            }
+            for &index in component {
+                result[index] = Self {
+                    bound_typevar: path[index].bound_typevar,
+                    ..merged.clone()
+                };
+            }
+        }
+        Some(EqualityClasses {
+            bounds: result,
+            groups,
+        })
+    }
+
+    /// Substitute class representatives and conjoin their bounds, omitting self tautologies.
+    fn merge_bounds(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        path: &[Self],
+        component: &[usize],
+        specialization: Specialization<'db>,
+    ) -> Self {
+        let representative = path[component[0]].bound_typevar;
+        let mut merged = ConstraintBoundsBuilder::default();
+        for &index in component {
+            let bound = &path[index];
+            for lower in bound
+                .evidence_lower
+                .map(ConstraintBound::Evidence)
+                .into_iter()
+                .chain([ConstraintBound::Validity(bound.validity_lower)])
+            {
+                let mapped = lower.ty().apply_specialization(db, specialization);
+                // L(Q) <= Q is equivalent to L(Never) <= Q for Boolean occurrences
+                // of Q. References inside constructors must remain recursive.
+                let ty = TypeVarSolution::substitute_unguarded(
+                    db,
+                    env,
+                    mapped,
+                    representative,
+                    Type::Never,
+                );
+                if ty != mapped && ty.is_never() {
+                    continue;
+                }
+                merged.add_lower(db, env, lower.with_type(ty));
+            }
+            for upper in bound.upper.iter_clauses() {
+                let mapped = upper.ty().apply_specialization(db, specialization);
+                // Dually, Q <= U(Q) only constrains the Boolean region where Q holds.
+                let ty = TypeVarSolution::substitute_unguarded(
+                    db,
+                    env,
+                    mapped,
+                    representative,
+                    Type::object(),
+                );
+                if ty != mapped && ty.is_object() {
+                    continue;
+                }
+                merged.add_upper(db, env, upper.with_type(ty));
+            }
+        }
+        merged.finish(db, env, representative)
+    }
+
     /// Prefer a pinned equality to a union of its consequences before elimination.
     /// The original bounds remain available for validating the simultaneous solution.
     fn simplify_equation(
@@ -301,13 +442,122 @@ impl<'db> PathBound<'db> {
     }
 }
 
-/// Edges between the selected bindings in a single solution path.
+/// Shared bounds and membership of equality classes on a single constraint path.
+pub(super) struct EqualityClasses<'db> {
+    pub(super) bounds: Vec<PathBound<'db>>,
+    groups: Vec<Vec<usize>>,
+}
+
+impl<'db> EqualityClasses<'db> {
+    /// Reconcile per-variable inference preferences into one choice for each equality class.
+    /// Lower-bound evidence asks for a common supertype; upper-only evidence asks for a subtype.
+    /// If an intersection exceeds its budget, omit that class's bindings and retain incompleteness.
+    pub(super) fn merge_solutions(
+        &self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        solutions: &mut Vec<TypeVarSolution<'db>>,
+    ) -> bool {
+        let mut exceeded_budget = false;
+        let bindings: FxIndexMap<_, _> = solutions
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| (binding.bound_typevar, index))
+            .collect();
+        let mut omitted = FxIndexSet::default();
+        for group in &self.groups {
+            if group.len() == 1 {
+                continue;
+            }
+            let indices: Vec<_> = group
+                .iter()
+                .filter_map(|index| bindings.get(&self.bounds[*index].bound_typevar).copied())
+                .collect();
+            let choices = indices.iter().map(|index| solutions[*index].solution);
+            let choice = if self.bounds[group[0]].evidence_lower.is_some() {
+                Some(UnionType::from_elements(db, env, choices))
+            } else {
+                IntersectionType::bounded_from_elements(db, env, choices)
+            };
+            if let Some(choice) = choice {
+                for index in indices {
+                    solutions[index].solution = choice;
+                }
+            } else {
+                exceeded_budget = true;
+                omitted.extend(indices);
+            }
+        }
+        let mut index = 0;
+        solutions.retain(|_| {
+            let keep = !omitted.contains(&index);
+            index += 1;
+            keep
+        });
+        exceeded_budget
+    }
+}
+
+/// Directed relationships between type variables in a single solution path.
 struct SolutionDependencies {
     dependencies: Vec<Vec<usize>>,
     dependents: Vec<Vec<usize>>,
 }
 
 impl SolutionDependencies {
+    /// Bare subtype edges form equality classes exactly when they are mutually reachable.
+    /// Only inferable variables can be substituted; outer parameters keep their identities.
+    fn from_bounds<'db>(
+        db: &'db dyn Db,
+        bounds: &[PathBound<'db>],
+        inferable: TypeVarSet<'db>,
+    ) -> Self {
+        let mut dependencies = vec![Vec::new(); bounds.len()];
+        let mut variables = FxIndexMap::default();
+        for (index, bound) in bounds.iter().enumerate() {
+            if bound.bound_typevar.is_inferable(db, inferable) {
+                let previous = *variables
+                    .entry(bound.bound_typevar.identity(db))
+                    .or_insert(index);
+                // Materialized occurrences can carry different declarations for the same variable.
+                if previous != index {
+                    dependencies[previous].push(index);
+                    dependencies[index].push(previous);
+                }
+            }
+        }
+        for (index, bound) in bounds.iter().enumerate() {
+            if !bound.bound_typevar.is_inferable(db, inferable) {
+                continue;
+            }
+            for lower in bound
+                .evidence_lower
+                .into_iter()
+                .chain([bound.validity_lower])
+            {
+                let elements = match lower {
+                    Type::Union(union) => union.elements(db),
+                    _ => std::slice::from_ref(&lower),
+                };
+                for element in elements {
+                    if let Type::TypeVar(variable) = element
+                        && let Some(&source) = variables.get(&variable.identity(db))
+                    {
+                        dependencies[source].push(index);
+                    }
+                }
+            }
+            for upper in bound.upper.iter_clauses() {
+                if let Type::TypeVar(variable) = upper.ty()
+                    && let Some(&target) = variables.get(&variable.identity(db))
+                {
+                    dependencies[index].push(target);
+                }
+            }
+        }
+        Self::from_dependencies(dependencies)
+    }
+
     /// Record dependencies in the selected solution types, including alias arguments.
     fn new<'db>(
         db: &'db dyn Db,
@@ -319,9 +569,8 @@ impl SolutionDependencies {
             .enumerate()
             .map(|(index, binding)| (binding.bound_typevar.identity(db), index))
             .collect();
-        let mut dependents = vec![Vec::new(); solution.len()];
         let mut dependencies = Vec::with_capacity(solution.len());
-        for (index, binding) in solution.iter().enumerate() {
+        for binding in solution {
             let found = RefCell::new(FxIndexSet::default());
             any_over_type_including_alias_arguments(db, env, binding.solution, |ty| {
                 if let Type::TypeVar(typevar) = ty
@@ -332,12 +581,18 @@ impl SolutionDependencies {
                 false
             });
             let found = found.into_inner();
-            for &dependency in &found {
-                dependents[dependency].push(index);
-            }
             dependencies.push(found.into_iter().collect());
         }
+        Self::from_dependencies(dependencies)
+    }
 
+    fn from_dependencies(dependencies: Vec<Vec<usize>>) -> Self {
+        let mut dependents = vec![Vec::new(); dependencies.len()];
+        for (index, edges) in dependencies.iter().enumerate() {
+            for &dependency in edges {
+                dependents[dependency].push(index);
+            }
+        }
         Self {
             dependencies,
             dependents,
