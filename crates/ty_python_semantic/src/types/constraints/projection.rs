@@ -226,15 +226,16 @@ impl<'db> PathBounds<'db> {
             &mut ProjectionTypeBudget,
         ) -> Result<T, ProjectionError>,
     ) -> Result<SolutionProjection<T>, ProjectionError> {
-        let paths = match self {
+        let (paths, inferable) = match self {
             Self::Unsatisfiable => return Ok(SolutionProjection::Unsatisfiable),
             Self::Unconstrained => return Ok(SolutionProjection::Unconstrained),
-            Self::Constrained(paths) => paths,
+            Self::Constrained(paths, inferable) => (paths, *inferable),
         };
 
         let mut retained = false;
         for path in paths {
-            let Some((solution, incomplete)) = Self::solve_path_with(db, env, path, &mut choose)
+            let Some((solution, incomplete)) =
+                Self::solve_path_with(db, env, path, inferable, &mut choose)
             else {
                 continue;
             };

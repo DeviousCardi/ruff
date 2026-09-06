@@ -611,6 +611,7 @@ class E: ...
             alternatives
                 .map(|ty| Box::new([PathBound::exact(t, ty)]) as Box<[_]>)
                 .into(),
+            TypeVarSet::from_typevars(db, [t]),
         );
 
         assert_eq!(

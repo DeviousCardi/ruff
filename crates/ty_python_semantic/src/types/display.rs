@@ -54,7 +54,10 @@ use ty_python_core::semantic_index;
 enum NamedItem<'db> {
     Class(ClassLiteral<'db>),
     TypeAlias(TypeAliasType<'db>),
-    Recursive(RecursiveType<'db>),
+    Recursive {
+        definition: Definition<'db>,
+        name: &'db str,
+    },
 }
 
 impl<'db> NamedItem<'db> {
@@ -65,9 +68,14 @@ impl<'db> NamedItem<'db> {
                 // Specializations of the same alias share a display name.
                 left.definition(db) == right.definition(db)
             }
-            (NamedItem::Recursive(left), NamedItem::Recursive(right)) => {
-                left.definition(db) == right.definition(db)
-            }
+            (
+                NamedItem::Recursive {
+                    definition: left, ..
+                },
+                NamedItem::Recursive {
+                    definition: right, ..
+                },
+            ) => left == right,
             _ => false,
         }
     }
@@ -76,7 +84,7 @@ impl<'db> NamedItem<'db> {
         match self {
             NamedItem::Class(class) => class.name(db),
             NamedItem::TypeAlias(type_alias) => type_alias.name(db),
-            NamedItem::Recursive(recursive) => recursive.name(db),
+            NamedItem::Recursive { name, .. } => name,
         }
     }
 
@@ -86,9 +94,8 @@ impl<'db> NamedItem<'db> {
             NamedItem::TypeAlias(type_alias) => {
                 type_alias.qualified_name(db).components_excluding_self()
             }
-            NamedItem::Recursive(recursive) => {
-                QualifiedTypeAliasName::new(db, recursive.definition(db), recursive.name(db))
-                    .components_excluding_self()
+            NamedItem::Recursive { definition, name } => {
+                QualifiedTypeAliasName::new(db, definition, name).components_excluding_self()
             }
         }
     }
@@ -150,6 +157,9 @@ pub struct DisplaySettings<'db> {
     /// Function types that are currently being displayed.
     /// Used to prevent infinite recursion when displaying self-referential function types.
     visited_function_types: Rc<FxHashSet<FunctionType<'db>>>,
+    /// Anonymous binders surrounding the displayed closed unfolding. Repeated
+    /// occurrences refer to their binder instead of unfolding indefinitely.
+    recursive_binders: Rc<[RecursiveType<'db>]>,
     /// Whether to hide the return type of the outermost signature.
     /// Return types of nested callable types inside parameters are still shown.
     hide_return_type: bool,
@@ -628,7 +638,9 @@ impl<'db> TypeVisitor<'db> for AmbiguousNameCollector<'_, 'db> {
                 self.record_class(db, ClassLiteral::Static(alias.origin(db)));
             }
             Type::TypeAlias(type_alias) => self.record_type_alias(db, type_alias),
-            Type::Recursive(recursive) => self.record(db, NamedItem::Recursive(recursive)),
+            Type::Recursive(recursive) if let Some((definition, name)) = recursive.alias(db) => {
+                self.record(db, NamedItem::Recursive { definition, name });
+            }
             // Visit the class (as if it were a nominal-instance type)
             // rather than the protocol members, if it is a class-based protocol.
             // (For the purposes of displaying the type, we'll use the class name.)
@@ -650,8 +662,11 @@ impl<'db> TypeVisitor<'db> for AmbiguousNameCollector<'_, 'db> {
     }
 
     fn visit_recursive_type(&self, db: &'db dyn Db, recursive: RecursiveType<'db>) {
-        // Only the alias name and its arguments are displayed, not its unfolded body.
-        if let Some(arguments) = recursive.arguments(db) {
+        if recursive.alias(db).is_none() {
+            // Inferred recursive types display their bodies, including ambiguous names.
+            self.visit_type(db, recursive.unfold(db, self.env));
+        } else if let Some(arguments) = recursive.arguments(db) {
+            // Named aliases only display their names and arguments.
             walk_specialization_types(db, arguments, self);
         }
     }
@@ -1638,19 +1653,45 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     alias.materialization_kind(db),
                     f,
                 ),
-            Type::Recursive(recursive) => TypeAliasDisplay {
-                db,
-                ty: self.ty,
-                definition: recursive.definition(db),
-                name: recursive.name(db),
-                settings: self.settings.clone(),
+            Type::Recursive(recursive) if let Some((definition, name)) = recursive.alias(db) => {
+                TypeAliasDisplay {
+                    db,
+                    ty: self.ty,
+                    definition,
+                    name,
+                    settings: self.settings.clone(),
+                }
+                .fmt_specialized(
+                    self.env,
+                    recursive.arguments(db),
+                    recursive.materialization_kind(db),
+                    f,
+                )
             }
-            .fmt_specialized(
-                self.env,
-                recursive.arguments(db),
-                recursive.materialization_kind(db),
-                f,
-            ),
+            Type::Recursive(recursive) => {
+                if let Some(index) = self
+                    .settings
+                    .recursive_binders
+                    .iter()
+                    .position(|binder| *binder == recursive)
+                {
+                    return write!(f, "a{index}");
+                }
+                let mut settings = self.settings.clone();
+                let index = settings.recursive_binders.len();
+                settings.recursive_binders = settings
+                    .recursive_binders
+                    .iter()
+                    .copied()
+                    .chain([recursive])
+                    .collect();
+                write!(f, "(μa{index}. ")?;
+                recursive
+                    .unfold(db, self.env)
+                    .display_with(db, self.env, settings)
+                    .fmt_detailed(f)?;
+                f.write_char(')')
+            }
             Type::NewTypeInstance(newtype) => f.with_type(self.ty).write_str(newtype.name(db)),
         }
     }

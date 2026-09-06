@@ -111,8 +111,9 @@ use crate::types::visitor::{
     TypeCollector, TypeKind, TypeVisitor, walk_non_atomic_type, walk_type_with_recursion_guard,
 };
 use crate::types::{
-    ApplyTypeMappingVisitor, BoundTypeVarInstance, IntersectionType, Parameters, Type, TypeContext,
-    TypeMapping, TypePair, TypeVarBoundOrConstraints, TypeVarVariance, UnionType,
+    ApplyTypeMappingVisitor, BoundTypeVarInstance, GenericContext, IntersectionType, Parameters,
+    Type, TypeContext, TypeMapping, TypePair, TypeVarBoundOrConstraints, TypeVarVariance,
+    UnionType,
 };
 use crate::{Db, FxIndexMap, FxIndexSet, FxOrderSet, ProgramEnvironment};
 
@@ -4098,7 +4099,9 @@ fn is_possibly_constraint_set_assignable<'db>(db: &'db dyn Db, types: TypePair<'
 pub(crate) enum PathBounds<'db> {
     Unsatisfiable,
     Unconstrained,
-    Constrained(Box<[Box<[PathBound<'db>]>]>),
+    /// Keep outer-variable bounds for contextual inference, but only bind variables
+    /// in the inferable set when constructing recursive solutions.
+    Constrained(Box<[Box<[PathBound<'db>]>]>, TypeVarSet<'db>),
 }
 
 /// Limits shared by the preprocessing and collection walks used to extract solutions.
@@ -4246,7 +4249,7 @@ impl<'db> PathBounds<'db> {
         let path_source_order = storage.ordered_source_order(source_order, derived_source_order);
         let mut path = interior.path_assignments(db, env, storage, path_source_order);
         walker.visit_node(db, env, storage, &mut path, node, limits)?;
-        ControlFlow::Continue(walker.finish(db, env, storage))
+        ControlFlow::Continue(walker.finish(db, env, storage, inferable))
     }
 
     /// Accumulates a conjunction of concrete bound constraints without constructing a
@@ -4327,7 +4330,7 @@ impl<'db> PathBounds<'db> {
             .drain(..)
             .map(|(bound_typevar, bounds)| bounds.finish(db, env, bound_typevar))
             .collect();
-        ControlFlow::Continue(Some(PathBounds::Constrained(Box::new([path]))))
+        ControlFlow::Continue(Some(PathBounds::Constrained(Box::new([path]), inferable)))
     }
 
     pub(crate) fn solve(
@@ -4363,17 +4366,17 @@ impl<'db> PathBounds<'db> {
         mut choose: impl FnMut(TypeVarVariance, &PathBound<'db>) -> PathBoundSolution<'db>,
         mut check_solution: impl FnMut(&Solution<'db>) -> Result<(), E>,
     ) -> Result<Solutions<'db>, E> {
-        let paths = match self {
+        let (paths, inferable) = match self {
             PathBounds::Unsatisfiable => return Ok(Solutions::Unsatisfiable),
             PathBounds::Unconstrained => return Ok(Solutions::Unconstrained),
-            PathBounds::Constrained(paths) => paths,
+            PathBounds::Constrained(paths, inferable) => (paths, *inferable),
         };
 
         let mut solutions = Vec::with_capacity(paths.len());
         let mut exceeded_budget = false;
         for path in paths {
             let Some((solution, path_exceeded_budget)) =
-                Self::solve_path_with(db, env, path, &mut choose)
+                Self::solve_path_with(db, env, path, inferable, &mut choose)
             else {
                 continue;
             };
@@ -4398,6 +4401,7 @@ impl<'db> PathBounds<'db> {
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         path: &[PathBound<'db>],
+        inferable: TypeVarSet<'db>,
         choose: &mut impl FnMut(TypeVarVariance, &PathBound<'db>) -> PathBoundSolution<'db>,
     ) -> Option<(Solution<'db>, bool)> {
         let mut solution = Vec::with_capacity(path.len());
@@ -4419,7 +4423,67 @@ impl<'db> PathBounds<'db> {
                 });
             }
         }
-        TypeVarSolution::resolve_dependencies(db, env, &mut solution);
+        if TypeVarSolution::resolve_dependencies(db, env, &mut solution, path, inferable) {
+            let bindings = solution
+                .iter()
+                .filter(|binding| binding.bound_typevar.is_inferable(db, inferable));
+            let context = GenericContext::from_typevar_instances(
+                db,
+                env,
+                bindings.clone().map(|binding| binding.bound_typevar),
+            );
+            let types: Vec<_> = bindings.map(|binding| binding.solution).collect();
+            let specialization = context.specialize(db, &types);
+            // Recursive closure constructs a candidate, not a proof. Check the
+            // original bounds together under the resulting simultaneous substitution.
+            for bound in path {
+                if !bound.bound_typevar.is_inferable(db, inferable) {
+                    continue;
+                }
+                let Some(binding) = solution.iter().find(|binding| {
+                    binding.bound_typevar.identity(db) == bound.bound_typevar.identity(db)
+                }) else {
+                    continue;
+                };
+                let lower = bound
+                    .effective_lower(db, env)
+                    .apply_specialization(db, specialization);
+                if !is_possibly_constraint_set_assignable(
+                    db,
+                    TypePair::new(db, env.program(db), lower, binding.solution),
+                ) {
+                    return None;
+                }
+                for upper in bound.upper.iter_clauses() {
+                    let upper = upper.ty().apply_specialization(db, specialization);
+                    if !is_possibly_constraint_set_assignable(
+                        db,
+                        TypePair::new(db, env.program(db), binding.solution, upper),
+                    ) {
+                        return None;
+                    }
+                }
+                let declared = bound
+                    .bound_typevar
+                    .typevar(db)
+                    .require_bound_or_constraints(db, env);
+                let declared_upper = match declared {
+                    TypeVarBoundOrConstraints::UpperBound(upper) => upper,
+                    TypeVarBoundOrConstraints::Constraints(constraints) => {
+                        constraints.as_type(db, env)
+                    }
+                };
+                let declared_upper = declared_upper
+                    .apply_specialization(db, specialization)
+                    .top_materialization(db, env);
+                if !is_possibly_constraint_set_assignable(
+                    db,
+                    TypePair::new(db, env.program(db), binding.solution, declared_upper),
+                ) {
+                    return None;
+                }
+            }
+        }
         Some((solution, exceeded_budget))
     }
 
@@ -6306,7 +6370,11 @@ mod tests {
         );
         assert_eq!(PathBoundSolution::Unsolved.as_type(), None);
         assert_eq!(
-            PathBounds::Constrained(Box::new([Box::new([path_bound])])).solve(db, &env, &builder),
+            PathBounds::Constrained(
+                Box::new([Box::new([path_bound])]),
+                TypeVarSet::from_typevars(db, [t])
+            )
+            .solve(db, &env, &builder),
             Solutions::Constrained(SolutionPaths::Complete(vec![vec![]]))
         );
     }
@@ -6462,7 +6530,11 @@ class E: ...
                     expected_paths.reverse();
                 }
                 assert_eq!(
-                    PathBounds::Constrained(paths.into_boxed_slice()).solve(db, &env, &builder),
+                    PathBounds::Constrained(
+                        paths.into_boxed_slice(),
+                        TypeVarSet::from_typevars(db, [t, u])
+                    )
+                    .solve(db, &env, &builder),
                     Solutions::Constrained(SolutionPaths::BudgetExceeded(expected_paths))
                 );
             }
@@ -6477,10 +6549,13 @@ class E: ...
                 if invalid_first {
                     rejected.reverse();
                 }
-                let paths = PathBounds::Constrained(Box::new([
-                    rejected.into_boxed_slice(),
-                    Box::new([PathBound::exact(t, int)]),
-                ]));
+                let paths = PathBounds::Constrained(
+                    Box::new([
+                        rejected.into_boxed_slice(),
+                        Box::new([PathBound::exact(t, int)]),
+                    ]),
+                    TypeVarSet::from_typevars(db, [t, u]),
+                );
                 assert_eq!(
                     paths.solve(db, &env, &builder),
                     Solutions::Constrained(SolutionPaths::Complete(vec![vec![binding(t, int)]]))

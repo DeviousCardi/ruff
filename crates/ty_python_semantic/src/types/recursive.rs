@@ -14,8 +14,9 @@ use super::generics::{ApplySpecialization, Specialization, walk_specialization_t
 use super::variance::{VarianceInferable, VarianceOrigin};
 use super::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
 use super::{
-    ApplyTypeMappingVisitor, BoundTypeVarIdentity, GenericContext, MaterializationKind, Type,
-    TypeAliasType, TypeContext, TypeMapping, VarianceTerm,
+    ApplyTypeMappingVisitor, BindingContext, BoundTypeVarIdentity, BoundTypeVarInstance,
+    GenericContext, MaterializationKind, Type, TypeAliasType, TypeContext, TypeMapping,
+    VarianceTerm,
 };
 use crate::{Db, ProgramEnvironment};
 
@@ -75,25 +76,48 @@ pub struct RecursiveMapping<'db>(RecursiveSubstitution<'db>);
 enum RecursiveSubstitution<'db> {
     Unfold(RecursiveType<'db>),
     Bind(RecursiveType<'db>),
+    BindTypeVar(BoundTypeVarInstance<'db>),
 }
 
-/// The query cycle that introduced a provisional recursive type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RecursiveCycle(salsa::Id);
+impl<'db> RecursiveMapping<'db> {
+    /// Bind a free inference variable at the current de Bruijn depth. The caller
+    /// closes the resulting body before any semantic operation can inspect it.
+    pub(super) fn apply_typevar(
+        self,
+        db: &'db dyn Db,
+        typevar: BoundTypeVarInstance<'db>,
+        depth: u32,
+    ) -> Type<'db> {
+        match self.0 {
+            RecursiveSubstitution::BindTypeVar(variable)
+                if variable.identity(db) == typevar.identity(db) =>
+            {
+                Type::RecursiveVar(RecursiveVar::new_internal(db, depth, None))
+            }
+            _ => Type::TypeVar(typevar),
+        }
+    }
+}
 
-impl get_size2::GetSize for RecursiveCycle {}
+/// The alias query or inference variable that introduced a recursive binder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, salsa::SalsaValue)]
+pub enum RecursiveOrigin<'db> {
+    Alias {
+        definition: Definition<'db>,
+        cycle: salsa::Id,
+    },
+    Inferred(BoundTypeVarInstance<'db>),
+}
+
+impl get_size2::GetSize for RecursiveOrigin<'_> {}
 
 /// A recursive type whose raw body is private. Unfolding substitutes closed types
 /// for references before exposing the body to ordinary type operations.
 /// Use the binding operations in this module to construct recursive types.
 #[salsa::interned(debug, constructor=new_internal, heap_size=ruff_memory_usage::heap_size)]
 pub struct RecursiveType<'db> {
-    /// The implicit alias that introduced this recursive constructor.
     #[returns(copy)]
-    pub(super) definition: Definition<'db>,
-    /// Distinguishes the provisional types of different alias queries.
-    #[returns(copy)]
-    cycle: RecursiveCycle,
+    origin: RecursiveOrigin<'db>,
     #[returns(copy)]
     body: Type<'db>,
     /// The arguments of a closed application of this recursive constructor.
@@ -117,12 +141,50 @@ impl<'db> RecursiveType<'db> {
         let arguments = parameters.map(|parameters| parameters.identity_specialization(db));
         Type::Recursive(Self::new_internal(
             db,
-            definition,
-            RecursiveCycle(cycle),
+            RecursiveOrigin::Alias { definition, cycle },
             Type::RecursiveVar(RecursiveVar::new_internal(db, 0, arguments)),
             arguments,
             None,
         ))
+    }
+
+    /// Close the equation `variable = result` by binding occurrences of `variable`.
+    /// Identity equations remain free; noncontractive bodies cannot define a
+    /// structural recursive type and are left for the constraint solver to resolve.
+    pub(super) fn from_equation(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        variable: BoundTypeVarInstance<'db>,
+        result: Type<'db>,
+    ) -> Option<Type<'db>> {
+        if result == Type::TypeVar(variable) {
+            return Some(result);
+        }
+        result.assert_no_unbound_recursive_vars(db, env);
+        let body = result.apply_type_mapping_impl(
+            db,
+            &TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::BindTypeVar(
+                variable,
+            ))),
+            TypeContext::default(),
+            &ApplyTypeMappingVisitor::new(env),
+        );
+        if Self::has_unguarded_reference(db, body) {
+            return None;
+        }
+        let result = if RecursiveReferences::contains_escaping(db, env, body) {
+            Type::Recursive(Self::new_internal(
+                db,
+                RecursiveOrigin::Inferred(variable),
+                body,
+                None,
+                None,
+            ))
+        } else {
+            body
+        };
+        result.assert_no_unbound_recursive_vars(db, env);
+        Some(result)
     }
 
     /// Close recursive occurrences after inferring an alias's constructor expression.
@@ -154,23 +216,24 @@ impl<'db> RecursiveType<'db> {
     }
 
     fn build(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>, body: Type<'db>) -> Type<'db> {
-        if Self::has_unguarded_reference(db, body) {
-            return Type::divergent(self.cycle(db).0);
+        if Self::has_unguarded_reference(db, body)
+            && let RecursiveOrigin::Alias { cycle, .. } = self.origin(db)
+        {
+            return Type::divergent(cycle);
         }
         if !RecursiveReferences::contains_escaping(db, env, body) {
             return body;
         }
         Type::Recursive(Self::new_internal(
             db,
-            self.definition(db),
-            self.cycle(db),
+            self.origin(db),
             body,
             self.arguments(db),
             None,
         ))
     }
 
-    /// Check a raw body for self-references reachable through unions alone.
+    /// Check a raw body for self-references reachable through Boolean type operations alone.
     /// No nested binders are entered, so index 0 always denotes the body's own binder.
     fn has_unguarded_reference(db: &'db dyn Db, body: Type<'db>) -> bool {
         match body {
@@ -179,6 +242,11 @@ impl<'db> RecursiveType<'db> {
                 .elements(db)
                 .iter()
                 .any(|element| Self::has_unguarded_reference(db, *element)),
+            Type::Intersection(intersection) => intersection
+                .positive(db)
+                .iter()
+                .chain(intersection.negative(db))
+                .any(|element| Self::has_unguarded_reference(db, *element)),
             _ => false,
         }
     }
@@ -186,8 +254,7 @@ impl<'db> RecursiveType<'db> {
     fn with_arguments(self, db: &'db dyn Db, arguments: Option<Specialization<'db>>) -> Self {
         Self::new_internal(
             db,
-            self.definition(db),
-            self.cycle(db),
+            self.origin(db),
             self.body(db),
             arguments,
             self.materialization_kind(db),
@@ -201,8 +268,7 @@ impl<'db> RecursiveType<'db> {
     ) -> Self {
         Self::new_internal(
             db,
-            self.definition(db),
-            self.cycle(db),
+            self.origin(db),
             self.body(db),
             self.arguments(db),
             materialization,
@@ -215,12 +281,15 @@ impl<'db> RecursiveType<'db> {
             .map(|arguments| arguments.generic_context(db))
     }
 
-    /// The declared alias name, shared by all specializations of this constructor.
-    pub(super) fn name(self, db: &'db dyn Db) -> &'db str {
-        let definition = self.definition(db);
-        place_table(db, definition.scope(db))
+    /// The source alias's definition and name, if this binder comes from an alias.
+    pub(super) fn alias(self, db: &'db dyn Db) -> Option<(Definition<'db>, &'db str)> {
+        let RecursiveOrigin::Alias { definition, .. } = self.origin(db) else {
+            return None;
+        };
+        let name = place_table(db, definition.scope(db))
             .symbol(definition.place(db).expect_symbol())
-            .name()
+            .name();
+        Some((definition, name))
     }
 
     /// Restore the formal arguments for analysis of the recursive constructor.
@@ -234,7 +303,17 @@ impl<'db> RecursiveType<'db> {
 
     /// The program in which the recursive type's body was constructed.
     pub fn environment(self, db: &'db dyn Db) -> ProgramEnvironment<'db> {
-        ProgramEnvironment::from_definition(self.definition(db))
+        match self.origin(db) {
+            RecursiveOrigin::Alias { definition, .. } => {
+                ProgramEnvironment::from_definition(definition)
+            }
+            RecursiveOrigin::Inferred(variable) => match variable.binding_context(db) {
+                BindingContext::Definition(definition) => {
+                    ProgramEnvironment::from_definition(definition)
+                }
+                BindingContext::Synthetic(program) => ProgramEnvironment::from_program(program),
+            },
+        }
     }
 
     /// Substitute closed types for references before exposing the body.
@@ -285,7 +364,7 @@ impl<'db> RecursiveType<'db> {
     ) -> Type<'db> {
         match mapping {
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Bind(target)))
-                if self.cycle(db) == target.cycle(db)
+                if self.origin(db) == target.origin(db)
                     && self.body(db) == target.body(db)
                     && self.materialization_kind(db) == target.materialization_kind(db) =>
             {
@@ -308,8 +387,7 @@ impl<'db> RecursiveType<'db> {
                     .map(|arguments| arguments.apply_type_mapping_impl(db, mapping, &[], visitor));
                 Type::Recursive(Self::new_internal(
                     db,
-                    self.definition(db),
-                    self.cycle(db),
+                    self.origin(db),
                     body,
                     arguments,
                     self.materialization_kind(db),
