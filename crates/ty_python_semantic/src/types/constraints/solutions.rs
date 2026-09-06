@@ -10,7 +10,7 @@ use crate::types::constraints::{
 };
 use crate::types::typevar::TypeVarSet;
 use crate::types::{
-    BoundTypeVarInstance, GenericContext, RecursiveType, Type, UnionType,
+    BoundTypeVarInstance, GenericContext, IntersectionBuilder, RecursiveType, Type, UnionType,
     any_over_type_including_alias_arguments,
 };
 use crate::{Db, FxIndexMap, FxIndexSet, ProgramEnvironment};
@@ -18,7 +18,7 @@ use crate::{Db, FxIndexMap, FxIndexSet, ProgramEnvironment};
 impl<'db> TypeVarSolution<'db> {
     /// Solve dependencies within one path, preserving correlations between paths.
     /// Acyclic bindings are substituted in dependency order. Remaining equations
-    /// are eliminated once each, closing self-references with recursive binders.
+    /// are closed together as shared recursive graphs.
     /// Returns whether any recursive binder was introduced.
     pub(super) fn resolve_dependencies(
         db: &'db dyn Db,
@@ -128,35 +128,102 @@ impl<'db> TypeVarSolution<'db> {
                 }
             }
         }
+        if recursive {
+            // Fold finite dependents into the same graph when their structure also
+            // occurs inside a recursive component, independently of equation ordering.
+            let equations: Vec<_> = solution
+                .iter()
+                .map(|binding| (binding.bound_typevar, binding.solution))
+                .collect();
+            if let Some(types) = RecursiveType::from_equations(db, env, &equations) {
+                for (binding, ty) in solution.iter_mut().zip(types) {
+                    binding.solution = ty;
+                }
+            }
+        }
         recursive
     }
 
-    /// Eliminate each equation once, closing self-references before substitution.
-    /// Back-substitution into earlier equations preserves mutual references without
-    /// an unbounded expansion loop. The caller publishes the component atomically.
+    /// Simplify Boolean dependencies, then bind constructor edges simultaneously.
+    /// The caller publishes the component only after every equation is closed.
     fn close_component(
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         solution: &mut [Self],
     ) -> bool {
-        let mut recursive = false;
-        for index in 0..solution.len() {
-            let variable = solution[index].bound_typevar;
-            let equation = solution[index].without_self_constraint(db, env);
-            let Some(resolved) = RecursiveType::from_equation(db, env, variable, equation) else {
-                return false;
-            };
-            recursive |= resolved != equation && matches!(resolved, Type::Recursive(_));
-            solution[index].solution = resolved;
-            let context = GenericContext::from_typevar_instances(db, env, [variable]);
-            let specialization = context.specialize(db, &[resolved]);
-            for (dependent, binding) in solution.iter_mut().enumerate() {
+        let mut equations = solution.to_vec();
+        // Boolean dependencies can simplify away (for example, int & (int | T)).
+        // Eliminate them before binding, without expanding references under constructors.
+        for index in 0..equations.len() {
+            let variable = equations[index].bound_typevar;
+            let equation = equations[index].without_self_constraint(db, env);
+            equations[index].solution = equation;
+            for (dependent, binding) in equations.iter_mut().enumerate() {
                 if dependent != index {
-                    binding.solution = binding.solution.apply_specialization(db, specialization);
+                    binding.solution =
+                        Self::substitute_unguarded(db, env, binding.solution, variable, equation);
                 }
             }
         }
-        recursive
+        let equations: Vec<_> = equations
+            .iter()
+            .map(|binding| {
+                (
+                    binding.bound_typevar,
+                    binding.without_self_constraint(db, env),
+                )
+            })
+            .collect();
+        let Some(types) = RecursiveType::from_equations(db, env, &equations) else {
+            return false;
+        };
+        for (binding, ty) in solution.iter_mut().zip(types) {
+            binding.solution = ty;
+        }
+        true
+    }
+
+    /// Substitute within Boolean expressions; constructor edges stay shared.
+    fn substitute_unguarded(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        ty: Type<'db>,
+        variable: BoundTypeVarInstance<'db>,
+        replacement: Type<'db>,
+    ) -> Type<'db> {
+        match ty {
+            Type::TypeVar(found) if found.identity(db) == variable.identity(db) => replacement,
+            Type::Union(union) => UnionType::from_elements(
+                db,
+                env,
+                union.elements(db).iter().map(|element| {
+                    Self::substitute_unguarded(db, env, *element, variable, replacement)
+                }),
+            ),
+            Type::Intersection(intersection) => {
+                let mut builder = IntersectionBuilder::new(db, env);
+                for element in intersection.positive(db) {
+                    builder.add_positive_in_place(Self::substitute_unguarded(
+                        db,
+                        env,
+                        *element,
+                        variable,
+                        replacement,
+                    ));
+                }
+                for element in intersection.negative(db) {
+                    builder.add_negative_in_place(Self::substitute_unguarded(
+                        db,
+                        env,
+                        *element,
+                        variable,
+                        replacement,
+                    ));
+                }
+                builder.build()
+            }
+            _ => ty,
+        }
     }
 
     /// Drop the tautological part of `T >= T | F(T)`.

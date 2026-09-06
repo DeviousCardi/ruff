@@ -1677,20 +1677,46 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                 {
                     return write!(f, "a{index}");
                 }
+                if self
+                    .settings
+                    .recursive_binders
+                    .iter()
+                    .any(|binder| recursive.shares_graph(db, *binder))
+                {
+                    return recursive
+                        .unfold(db, self.env)
+                        .display_with(db, self.env, self.settings.clone())
+                        .fmt_detailed(f);
+                }
+                let members = recursive.members(db);
                 let mut settings = self.settings.clone();
-                let index = settings.recursive_binders.len();
+                let offset = settings.recursive_binders.len();
                 settings.recursive_binders = settings
                     .recursive_binders
                     .iter()
                     .copied()
-                    .chain([recursive])
+                    .chain(members.iter().copied())
                     .collect();
-                write!(f, "(μa{index}. ")?;
-                recursive
-                    .unfold(db, self.env)
-                    .display_with(db, self.env, settings)
-                    .fmt_detailed(f)?;
-                f.write_char(')')
+                if members.len() == 1 {
+                    write!(f, "(μa{offset}. ")?;
+                    recursive
+                        .unfold(db, self.env)
+                        .display_with(db, self.env, settings)
+                        .fmt_detailed(f)?;
+                    return f.write_char(')');
+                }
+                f.write_str("(letrec ")?;
+                for (index, member) in members.into_iter().enumerate() {
+                    if index != 0 {
+                        f.write_str("; ")?;
+                    }
+                    write!(f, "a{} = ", offset + index)?;
+                    member
+                        .unfold(db, self.env)
+                        .display_with(db, self.env, settings.clone())
+                        .fmt_detailed(f)?;
+                }
+                write!(f, " in a{offset})")
             }
             Type::NewTypeInstance(newtype) => f.with_type(self.ty).write_str(newtype.name(db)),
         }
