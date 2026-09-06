@@ -325,30 +325,28 @@ impl<'db> StaticClassLiteral<'db> {
                 let Some(base_class) = base.into_class() else {
                     continue;
                 };
-                match base_class.class_literal(db) {
+                let member = match base_class.class_literal(db) {
                     ClassLiteral::Static(base_literal) => {
                         if base_literal.is_known(db, KnownClass::Object) {
                             continue;
                         }
                         let member = class_member(db, base_literal.body_scope(db), name);
-                        if let Some(ty) = member.ignore_possibly_undefined() {
-                            let base_specialization = base_class
-                                .static_class_literal(db)
-                                .and_then(|(_, spec)| spec);
-                            return Some(ty.apply_optional_specialization(db, base_specialization));
-                        }
+                        let base_specialization = base_class
+                            .static_class_literal(db)
+                            .and_then(|(_, spec)| spec);
+                        member.map_type(|ty| {
+                            ty.apply_optional_specialization(db, base_specialization)
+                        })
                     }
-                    ClassLiteral::Dynamic(dynamic) => {
-                        // Dynamic classes (created with `type()`) can also define ordering methods
-                        // in their namespace dict.
-                        let member = dynamic.own_class_member(db, name);
-                        if let Some(ty) = member.ignore_possibly_undefined() {
-                            return Some(ty);
-                        }
-                    }
+                    // Applying `dataclass()` preserves methods in the dynamic class's namespace.
+                    ClassLiteral::Dynamic(dynamic) => dynamic.own_class_member(db, name),
+                    ClassLiteral::Dataclass(class) => class.class(db).own_class_member(db, name),
                     ClassLiteral::DynamicNamedTuple(_)
                     | ClassLiteral::DynamicTypedDict(_)
-                    | ClassLiteral::DynamicEnum(_) => {}
+                    | ClassLiteral::DynamicEnum(_) => continue,
+                };
+                if let Some(ty) = member.ignore_possibly_undefined() {
+                    return Some(ty);
                 }
             }
         }
@@ -987,7 +985,8 @@ impl<'db> StaticClassLiteral<'db> {
                 ClassLiteral::DynamicNamedTuple(_) => true,
                 ClassLiteral::Dynamic(_)
                 | ClassLiteral::DynamicTypedDict(_)
-                | ClassLiteral::DynamicEnum(_) => false,
+                | ClassLiteral::DynamicEnum(_)
+                | ClassLiteral::Dataclass(_) => false,
                 ClassLiteral::Static(class) => class
                     .explicit_bases(db)
                     .contains(&Type::SpecialForm(SpecialFormType::NamedTuple)),

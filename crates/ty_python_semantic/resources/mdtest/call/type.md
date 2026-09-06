@@ -1436,6 +1436,18 @@ def make_chain(depth: int) -> type[object]:
     return current
 ```
 
+The namespace retains the concrete class types captured by the loop, including a reference back to
+its own class definition.
+
+```py
+def inspect_chain(depth: int):
+    current = type("Leaf", (), {"child": object})
+    for _ in range(depth):
+        current = type("Branch", (), {"child": current})
+    reveal_type(current)  # revealed: <class 'Leaf'> | <class 'Branch'>
+    reveal_type(current.child)  # revealed: <class 'object'> | <class 'Leaf'> | <class 'Branch'>
+```
+
 ## Dynamic class base reassignment in a loop
 
 A dynamic class that is not the direct right-hand side of an assignment stores its inferred bases in
