@@ -2268,6 +2268,11 @@ impl<'db> Type<'db> {
         previous: Self,
         cycle: &salsa::Cycle,
     ) -> Self {
+        if let Type::Recursive(recursive) = previous
+            && let Some(result) = recursive.recover_inference(db, env, self)
+        {
+            return result;
+        }
         // When we encounter a salsa cycle, we want to avoid oscillating between two or more types
         // without converging on a fixed-point result. Most of the time, we union together the
         // types from each cycle iteration to ensure that our result is monotonic, even if we
@@ -2646,7 +2651,7 @@ impl<'db> Type<'db> {
     }
 
     /// Resolve aliases and recursive binders at the outermost level.
-    fn resolve_type_alias(self, db: &'db dyn Db) -> Type<'db> {
+    pub(crate) fn resolve_type_alias(self, db: &'db dyn Db) -> Type<'db> {
         let mut ty = self;
         let mut seen = SmallVec::<[Type<'db>; 4]>::new();
         loop {
@@ -2660,7 +2665,7 @@ impl<'db> Type<'db> {
                 }
                 Type::Recursive(recursive) => {
                     seen.push(ty);
-                    ty = recursive.unfold(db, &recursive.environment(db));
+                    ty = recursive.map_type(db, &recursive.environment(db), std::convert::identity);
                 }
                 Type::RecursiveVar(_) => {
                     unreachable!("semantic operation on an unbound recursive variable")
@@ -3927,7 +3932,7 @@ impl<'db> Type<'db> {
 
     #[salsa::tracked(
         returns(copy),
-        cycle_initial=|_, id, _| Place::bound(Type::divergent(id)).into(),
+        cycle_initial=|db, id, key: MemberLookupKey<'db>| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
         cycle_fn=|db, cycle, previous: &PlaceAndQualifiers<'db>, member: PlaceAndQualifiers<'db>, key: MemberLookupKey<'db>| {
             member.cycle_normalized(db, &ProgramEnvironment::from_program(key.program(db)), *previous, cycle)
         },
@@ -5421,7 +5426,7 @@ impl<'db> Type<'db> {
     ) -> MemberLookupResult<'db> {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|_, id, _| Place::bound(Type::divergent(id)).into(),
+            cycle_initial=|db, id, key: MemberLookupKey<'db>| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
             cycle_fn=|db, cycle, previous: &MemberLookupResult<'db>, member: MemberLookupResult<'db>, key: MemberLookupKey<'db>| {
                 cycle_normalized_member_lookup(db, &ProgramEnvironment::from_program(key.program(db)), member, *previous, cycle)
             },
@@ -5436,7 +5441,7 @@ impl<'db> Type<'db> {
 
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|_, id, _, _| Place::bound(Type::divergent(id)).into(),
+            cycle_initial=|db, id, key: MemberLookupKey<'db>, _| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
             cycle_fn=|db, cycle, previous: &MemberLookupResult<'db>, member: MemberLookupResult<'db>, key: MemberLookupKey<'db>, _| {
                 cycle_normalized_member_lookup(db, &ProgramEnvironment::from_program(key.program(db)), member, *previous, cycle)
             },

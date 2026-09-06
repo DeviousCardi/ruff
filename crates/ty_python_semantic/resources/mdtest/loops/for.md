@@ -1812,6 +1812,38 @@ for _ in range(1_000_000):
     reveal_type(x)  # revealed: int
 ```
 
+### Recursive tuple construction
+
+Wrapping the previous value in a tuple produces a recursive type. The initial value remains an
+alternative because the loop may execute zero times.
+
+```py
+def nest(n: int):
+    value = 0
+    for _ in range(n):
+        value = (value,)
+    reveal_type(value)  # revealed: (μa0. Literal[0] | tuple[a0])
+```
+
+### Mutually recursive loop bindings
+
+Each binding can contain the previous value of the other. Both initial values remain reachable
+through the recursive tuple structure.
+
+```py
+def build(n: int):
+    left = 1
+    right = "start"
+    for _ in range(n):
+        previous = left
+        left = (right, 1)
+        right = (previous, "end")
+    # revealed: (μa0. tuple[tuple[a0, Literal["end"]] | Literal["start"], Literal[1]] | Literal[1])
+    reveal_type(left)
+    # revealed: (μa0. tuple[tuple[a0, Literal[1]] | Literal[1], Literal["end"]] | Literal["start"])
+    reveal_type(right)
+```
+
 ### Unpacking alongside a recursively growing value
 
 The first element remains precise even when its sibling's type grows on each loop iteration. Reading
@@ -1843,7 +1875,7 @@ for _ in range(1_000_000):
     if x:
         x, y = y, x
     reveal_type(x)  # revealed: Literal[2, 1]
-    reveal_type(y)  # revealed: Literal[1, 2]
+    reveal_type(y)  # revealed: Literal[2, 1]
 ```
 
 ### Bindings in statically unreachable branches are excluded from loopback

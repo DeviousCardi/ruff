@@ -33,6 +33,119 @@ class Cyclic:
 reveal_type(Cyclic("").data)
 ```
 
+## Mutually recursive container attributes
+
+Three attributes can refer to each other through different containers. Following their contents
+returns to the original recursive type.
+
+```py
+class Containers:
+    def update(self, other: "Containers"):
+        self.a = [other.b]
+        self.b = {"next": other.c}
+        self.c = (other.a, 1)
+
+reveal_type(Containers().a)  # revealed: (μa0. list[dict[str, tuple[a0, int]]])
+reveal_type(Containers().b)  # revealed: (μa0. dict[str, tuple[list[a0], int]])
+reveal_type(Containers().c)  # revealed: (μa0. tuple[list[dict[str, a0]], int])
+reveal_type(Containers().a[0]["next"][0])  # revealed: (μa0. list[dict[str, tuple[a0, int]]])
+```
+
+## Mutually recursive attributes with initial values
+
+The inferred types include the initial values and the tuples built from the other attribute. They
+are equivalent to the two explicit recursive aliases below.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from ty_extensions import static_assert
+from ty_extensions._internal import TypeOf, is_equivalent_to
+
+class Pair:
+    def seed(self):
+        self.left = 1
+        self.right = "start"
+
+    def update(self, other: "Pair"):
+        self.left = (other.right, 1)
+        self.right = (other.left, "end")
+
+type Left = int | tuple[Right, int]
+type Right = str | tuple[Left, str]
+
+static_assert(is_equivalent_to(TypeOf[Pair().left], Left))
+static_assert(is_equivalent_to(TypeOf[Pair().right], Right))
+```
+
+## Multiple paths through recursive attributes
+
+These four attributes include their initial values and retain both references in the tuple assigned
+to `d`. Each inferred type matches its explicit recursive alias.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from ty_extensions import static_assert
+from ty_extensions._internal import TypeOf, is_equivalent_to
+
+class Ring:
+    def seed(self):
+        self.a = 1
+        self.b = "b"
+        self.c = True
+        self.d = 1.0
+    def step(self, other: "Ring"):
+        self.a = (other.b,)
+        self.b = [other.c]
+        self.c = {"d": other.d}
+        self.d = (other.a, other.b)
+
+type A = int | tuple[B]
+type B = str | list[C]
+type C = bool | dict[str, D]
+type D = float | tuple[A, B]
+
+static_assert(is_equivalent_to(TypeOf[Ring().a], A))
+static_assert(is_equivalent_to(TypeOf[Ring().b], B))
+static_assert(is_equivalent_to(TypeOf[Ring().c], C))
+static_assert(is_equivalent_to(TypeOf[Ring().d], D))
+```
+
+## Self-reference and mutual references
+
+An attribute can refer both to itself and to another recursively defined attribute. The initial
+values remain alternatives throughout the recursive structure.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+from ty_extensions import static_assert
+from ty_extensions._internal import TypeOf, is_equivalent_to
+
+class Branches:
+    def seed(self):
+        self.a = 1
+        self.b = "b"
+    def step(self, other: "Branches"):
+        self.a = (other.a, other.b)
+        self.b = (other.a,)
+
+type A = int | tuple[A, B]
+type B = str | tuple[A]
+static_assert(is_equivalent_to(TypeOf[Branches().b], B))
+static_assert(is_equivalent_to(TypeOf[Branches().a], A))
+```
+
 ## Cycle normalization preserves non-gradual variadic parameters
 
 Normalizing a recursive implicit-attribute type does not reinterpret specialized variadic parameters

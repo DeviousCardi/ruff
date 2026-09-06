@@ -284,11 +284,19 @@ impl<'db> PathBound<'db> {
         if selected != self.effective_lower(db, env) || !selected.is_fully_static(db, env) {
             return selected;
         }
-        // If A is both a lower-bound element and an upper bound, A <= T <= A.
+        // If A is included in the lower bound and is also an upper bound, A <= T <= A.
+        // Union bounds are flattened when consequences are added. Compare their elements
+        // so finite expansions cannot obscure the original recursive equation.
         self.upper
             .iter_clauses()
             .map(ConstraintBound::ty)
-            .find(|upper| lower.elements(db).contains(upper))
+            .find(|upper| match upper {
+                Type::Union(upper) => upper
+                    .elements(db)
+                    .iter()
+                    .all(|element| lower.elements(db).contains(element)),
+                _ => lower.elements(db).contains(upper),
+            })
             .unwrap_or(selected)
     }
 }

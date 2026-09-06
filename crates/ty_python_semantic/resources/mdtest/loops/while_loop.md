@@ -534,7 +534,7 @@ while random():
     if x:
         x, y = y, x
     reveal_type(x)  # revealed: Literal[2, 1]
-    reveal_type(y)  # revealed: Literal[1, 2]
+    reveal_type(y)  # revealed: Literal[2, 1]
 ```
 
 ### Loop increments guarded by chained comparisons converge

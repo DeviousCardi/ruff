@@ -55,7 +55,7 @@ impl<'db> RecursiveGraphBuilder<'db> {
         env: &ProgramEnvironment<'db>,
         roots: &[(Type<'db>, Type<'db>)],
     ) -> Option<GraphSolution<'db>> {
-        let builder = Self {
+        Self {
             inputs: RefCell::new(roots.iter().map(|(root, _)| *root).collect()),
             equations: roots.iter().copied().collect(),
             variables: roots
@@ -67,7 +67,32 @@ impl<'db> RecursiveGraphBuilder<'db> {
                     Some((variable.identity(db), *root))
                 })
                 .collect(),
-        };
+        }
+        .finish(db, env, roots.len())
+    }
+
+    /// Minimize an already closed type, including a finite prefix of a recursive graph.
+    pub(super) fn normalize(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        ty: Type<'db>,
+    ) -> Type<'db> {
+        Self {
+            inputs: RefCell::new([ty].into_iter().collect()),
+            equations: FxHashMap::default(),
+            variables: FxHashMap::default(),
+        }
+        .finish(db, env, 1)
+        .map_or(ty, |solution| solution.types[0])
+    }
+
+    fn finish(
+        self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        root_count: usize,
+    ) -> Option<GraphSolution<'db>> {
+        let builder = self;
         let mapping =
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Extract(&builder)));
         let visitor = ApplyTypeMappingVisitor::new(env);
@@ -80,7 +105,7 @@ impl<'db> RecursiveGraphBuilder<'db> {
             let body = if let Some(body) = builder.equations.get(&input) {
                 builder.reference(db, *body)
             } else if let Type::Recursive(recursive) = input
-                && recursive.alias(db).is_none()
+                && matches!(recursive.origin(db), RecursiveOrigin::ConstraintSolution(_))
             {
                 recursive.map_type(db, env, |body| builder.reference(db, body))
             } else {
@@ -88,7 +113,7 @@ impl<'db> RecursiveGraphBuilder<'db> {
             };
             bodies.push(body);
         }
-        let mut root_indices: Vec<_> = (0..roots.len()).collect();
+        let mut root_indices: Vec<_> = (0..root_count).collect();
         Self::remove_forwarding(db, env, &mut bodies, &mut root_indices)?;
         let unguarded: Vec<_> = bodies
             .iter()
@@ -154,7 +179,7 @@ impl<'db> RecursiveGraphBuilder<'db> {
                 for (local, index) in component.iter().enumerate() {
                     closed[*index] = Type::Recursive(RecursiveType::new_internal(
                         db,
-                        RecursiveOrigin::Inferred(env.program(db)),
+                        RecursiveOrigin::ConstraintSolution(env.program(db)),
                         graph,
                         entries[local],
                         None,

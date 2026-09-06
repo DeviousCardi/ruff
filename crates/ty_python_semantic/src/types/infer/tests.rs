@@ -10,7 +10,7 @@ use ruff_db::diagnostic::{Diagnostic, DiagnosticId};
 use ruff_db::files::{File, system_path_to_file};
 use ruff_db::system::DbWithWritableSystem as _;
 use ruff_db::testing::{assert_function_query_was_not_run, assert_function_query_was_run};
-use ruff_python_ast::PythonVersion;
+use ruff_python_ast::{self as ast, PythonVersion};
 use salsa::plumbing::AsId;
 use ty_python_core::definition::Definition;
 use ty_python_core::program::{Program, ProgramSettings};

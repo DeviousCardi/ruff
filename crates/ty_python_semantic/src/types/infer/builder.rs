@@ -6663,7 +6663,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             }
         };
 
-        let ty = self.apply_type_context(expression, ty, tcx);
+        let ty = self
+            .apply_type_context(expression, ty, tcx)
+            .normalize_recursive(self.db(), self.program_environment());
         self.store_expression_type(expression, ty);
         ty
     }
@@ -7801,6 +7803,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
                 if let Some(divergent) = statement_use_types
                     .expression_type(use_expression)
+                    .resolve_type_alias(db)
                     .as_divergent()
                 {
                     // Infer `collection[Divergent]` for the initial cycle result.

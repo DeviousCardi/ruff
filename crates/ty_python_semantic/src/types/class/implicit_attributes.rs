@@ -6,7 +6,8 @@ use crate::{
     place::{Place, Provenance},
     reachability::binding_reachability,
     types::{
-        KnownClass, Truthiness, Type, TypeContext, UnionBuilder, definition_expression_type,
+        KnownClass, RecursiveType, Truthiness, Type, TypeContext, UnionBuilder,
+        definition_expression_type,
         function::{is_implicit_classmethod, is_implicit_staticmethod},
         infer::infer_unpack_types,
         infer_expression_type, inferred_declaration,
@@ -81,9 +82,9 @@ impl<'db> StaticClassLiteral<'db> {
     #[salsa::tracked(
         returns(copy),
         cycle_fn=implicit_attribute_cycle_recover,
-        cycle_initial=|_, id, _| ImplicitAttribute {
+        cycle_initial=|db, id, attribute: ImplicitAttributeName<'db>| ImplicitAttribute {
             member: Member {
-                inner: Place::bound(Type::divergent(id)).into(),
+                inner: Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_scope(attribute.class_body_scope(db)), id)).into(),
             },
             augmented_bindings: None,
         },

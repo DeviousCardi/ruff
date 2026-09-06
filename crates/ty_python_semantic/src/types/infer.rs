@@ -46,7 +46,6 @@
 use crate::ProgramEnvironment;
 use itertools::Either;
 use ruff_db::parsed::parsed_module;
-use ruff_python_ast as ast;
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashMap;
 use salsa;
@@ -546,8 +545,17 @@ fn expression_cycle_initial<'db>(
     input: InferExpression<'db>,
 ) -> ExpressionInference<'db> {
     let (expression, _) = input.into_inner(db);
-    let cycle_recovery = Type::divergent(id);
-    ExpressionInference::cycle_initial(expression.scope(db), cycle_recovery)
+    let scope = expression.scope(db);
+    let program_file = scope.program_file(db);
+    let module = parsed_module(db, program_file.python_file(db)).load(db);
+    let mut inference = ExpressionInference::cycle_initial(scope, Type::divergent(id));
+    inference.expressions = [(
+        expression.node_ref(db).node(&module).into(),
+        RecursiveType::initial_inference(db, &ProgramEnvironment::from_scope(scope), id),
+    )]
+    .into_iter()
+    .collect();
+    inference
 }
 
 /// Infers the type of an `expression` that is guaranteed to be in the same file as the calling query.
@@ -1469,31 +1477,18 @@ impl<'db> DefinitionInference<'db> {
         let env = ProgramEnvironment::from_definition(definition);
         let mut types = DefinitionTypes::Empty;
 
-        // Eagerly store more precise types for collection literals to avoid an extra
-        // cycle iteration, i.e., by inferring `list[Divergent]` instead of `Divergent`.
-        if let DefinitionKind::Assignment(assignment) = definition.kind(db) {
-            let program_file = definition.program_file(db);
-            let python_file = program_file.python_file(db);
-            let module = parsed_module(db, python_file).load(db);
-            let known_collection = match assignment.value(&module) {
-                ast::Expr::Set(_) => Some(KnownClass::Set),
-                ast::Expr::List(_) => Some(KnownClass::List),
-                ast::Expr::Dict(_) => Some(KnownClass::Dict),
-                _ => None,
-            };
-
-            if let Some(known_collection) = known_collection {
-                if let Some(collection_class) = known_collection.try_to_class_literal(db, &env) {
-                    let divergent_collection = collection_class
-                        .apply_specialization(db, |generic_context| {
-                            generic_context.repeat_specialization(db, cycle_recovery)
-                        });
-
-                    types =
-                        DefinitionTypes::Binding(Type::instance(db, &env, divergent_collection));
-                }
-            }
-        } else if let DefinitionKind::AnnotatedAssignment(assignment) = definition.kind(db) {
+        if let Some(divergent) = cycle_recovery.as_divergent()
+            && matches!(
+                definition.kind(db),
+                DefinitionKind::Assignment(_)
+                    | DefinitionKind::LoopHeader(_)
+                    | DefinitionKind::NestedBindings(_)
+            )
+        {
+            types =
+                DefinitionTypes::Binding(RecursiveType::initial_inference(db, &env, divergent.id));
+        }
+        if let DefinitionKind::AnnotatedAssignment(assignment) = definition.kind(db) {
             let program_file = definition.program_file(db);
             let python_file = program_file.python_file(db);
             let module = parsed_module(db, python_file).load(db);

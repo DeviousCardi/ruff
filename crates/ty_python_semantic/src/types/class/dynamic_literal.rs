@@ -363,12 +363,12 @@ impl<'db> DynamicClassLiteral<'db> {
     }
 
     /// Returns the members inferred from the namespace argument.
-    pub(crate) fn members(self, db: &'db dyn Db) -> &'db [(Name, Type<'db>)] {
+    fn members(self, db: &'db dyn Db) -> &'db [(Name, Type<'db>)] {
         &self.shape(db).members
     }
 
     /// Returns whether unknown class members may be supplied by the namespace argument.
-    pub(crate) fn has_dynamic_namespace(self, db: &'db dyn Db) -> bool {
+    fn has_dynamic_namespace(self, db: &'db dyn Db) -> bool {
         self.shape(db).has_dynamic_namespace
     }
 
