@@ -374,7 +374,7 @@ impl<'db> RecursiveGraphBuilder<'db> {
     }
 
     /// Iterative Kosaraju traversal, returning components after their dependencies.
-    fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    pub(super) fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
         let mut reverse = vec![Vec::new(); edges.len()];
         for (source, targets) in edges.iter().enumerate() {
             for target in targets {

@@ -33,6 +33,64 @@ class Cyclic:
 reveal_type(Cyclic("").data)
 ```
 
+## Copying tuple attributes
+
+Copying tuple attributes preserves their lengths, including when two attributes are copied into each
+other. Their recursive elements can still be approximated independently of their lengths.
+
+```py
+class Copies:
+    def __init__(self):
+        self.left = (0, 1)
+        self.right = (2, 3)
+
+    def copy(self):
+        self.left = (*self.left,)
+
+    def swap(self):
+        previous = self.left
+        self.left = (*self.right,)
+        self.right = (*previous,)
+
+reveal_type(len(Copies().left))  # revealed: Literal[2]
+reveal_type(len(Copies().right))  # revealed: Literal[2]
+```
+
+A tuple can also start as a class default and then be copied onto the instance.
+
+```py
+class ClassDefault:
+    value = (0, 1)
+
+    def copy(self):
+        self.value = (*self.value,)
+
+reveal_type(len(ClassDefault().value))  # revealed: Literal[2]
+```
+
+## Tuple expansion through a property
+
+A property's getter determines the tuple read from it. The tuple passed to its setter does not
+define a recursive expansion of that read type.
+
+```py
+class FixedProperty:
+    @property
+    def value(self) -> tuple[int]:
+        return (0,)
+
+    @value.setter
+    def value(self, value: tuple[int, ...]) -> None:
+        pass
+
+    def update(self):
+        copied = (*self.value, 1)
+        self.value = copied
+        reveal_type(len(copied))  # revealed: Literal[2]
+
+reveal_type(len(FixedProperty().value))  # revealed: Literal[1]
+```
+
 ## Mutually recursive container attributes
 
 Three attributes can refer to each other through different containers. Following their contents is

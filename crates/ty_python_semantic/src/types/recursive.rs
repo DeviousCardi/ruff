@@ -6,8 +6,10 @@
 
 mod graph;
 mod inference;
+mod tuple_length;
 
 pub(super) use inference::{InferenceKey, InferenceQuery, RecursiveInputs};
+pub(super) use tuple_length::TupleLengthAnalysis;
 
 use std::cell::{Cell, RefCell};
 
@@ -112,7 +114,6 @@ enum RecursiveSubstitution<'a, 'db> {
     Bind(RecursiveType<'db>),
     Replace(&'a [(RecursiveType<'db>, Type<'db>)]),
     Approximate(Type<'db>),
-    WidenTuples,
     Reindex(&'a [usize]),
     Rebuild(&'a [Type<'db>]),
     Extract(&'a RecursiveGraphBuilder<'db>),
@@ -132,11 +133,6 @@ impl<'db> RecursiveMapping<'_, 'db> {
             &TypeMapping::Recursive(Self(RecursiveSubstitution::Approximate(divergent))),
             TypeContext::default(),
         )
-    }
-
-    /// Whether this structural mapping forgets tuple positions in inference equations.
-    pub(super) const fn widens_tuples(self) -> bool {
-        matches!(self.0, RecursiveSubstitution::WidenTuples)
     }
 
     /// Extract closed children as graph edges. Bodies of named aliases keep their

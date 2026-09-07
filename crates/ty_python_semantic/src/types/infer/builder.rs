@@ -108,6 +108,7 @@ use crate::types::match_pattern::{ClassPatternPositionalResult, class_pattern_po
 use crate::types::narrow::NarrowingEvaluatorExtension;
 use crate::types::narrow::pattern_success_types;
 use crate::types::newtype::NewType;
+use crate::types::recursive::TupleLengthAnalysis;
 use crate::types::set_theoretic::RecursivelyDefined;
 use crate::types::signatures::{CallableSignature, ReturnCallableTypeVarScope};
 use crate::types::special_form::TypeQualifier;
@@ -7191,7 +7192,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             },
             &|builder, unpacked| builder.concat(db, env, unpacked),
         );
-        Type::tuple(TupleType::new(db, env, &spec))
+        TupleLengthAnalysis::normalize(db, env, self.scope(), tuple, spec, &|expression| {
+            self.expression_type(expression)
+        })
     }
 
     fn infer_list_expression(&mut self, list: &ast::ExprList, tcx: TypeContext<'db>) -> Type<'db> {

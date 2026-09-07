@@ -1815,15 +1815,145 @@ for _ in range(1_000_000):
 ### Recursive tuple construction
 
 Wrapping the previous value in a tuple produces a recursive type. The initial value remains an
-alternative because the loop may execute zero times. Tuple positions inside the recursive part are
-widened to a variable-length tuple.
+alternative because the loop may execute zero times. Every tuple in the recursive part has exactly
+one element.
 
 ```py
 def nest(n: int):
     value = 0
     for _ in range(n):
         value = (value,)
-    reveal_type(value)  # revealed: (μa0. tuple[Literal[0] | a0, ...]) | Literal[0]
+    reveal_type(value)  # revealed: (μa0. tuple[Literal[0] | a0]) | Literal[0]
+    if isinstance(value, tuple):
+        reveal_type(len(value))  # revealed: Literal[1]
+        if len(value) == 0:
+            reveal_type(value)  # revealed: Never
+```
+
+### Positions in recursive tuples
+
+A recursive element does not affect the other tuple positions. Indexing and unpacking preserve the
+fixed second element, and indexing beyond the two-element tuple is an error.
+
+```py
+def nest(n: int):
+    value = 0
+    for _ in range(n):
+        value = (value, 1)
+    if isinstance(value, tuple):
+        reveal_type(value[1])  # revealed: Literal[1]
+        reveal_type(len(value))  # revealed: Literal[2]
+        # error: [index-out-of-bounds]
+        reveal_type(value[2])  # revealed: Unknown
+        first, second = value
+        reveal_type(second)  # revealed: Literal[1]
+        tag: int = value[1]
+```
+
+### Repeated tuple copying
+
+Unpacking a tuple without adding elements preserves its length on every iteration. Element types may
+still be approximated while inferring the recursive assignment.
+
+```py
+def copy(n: int):
+    value = (0, 1)
+    for _ in range(n):
+        value = (*value,)
+    reveal_type(len(value))  # revealed: Literal[2]
+
+def named_copy(n: int):
+    value = (0, 1)
+    for _ in range(n):
+        (value := (*value,))
+    reveal_type(len(value))  # revealed: Literal[2]
+```
+
+The same holds when two tuples are copied through an intermediate binding.
+
+```py
+def swap(n: int):
+    left = (0, 1)
+    right = (2, 3)
+    for _ in range(n):
+        previous = left
+        left = (*right,)
+        right = (*previous,)
+    reveal_type(len(left))  # revealed: Literal[2]
+    reveal_type(len(right))  # revealed: Literal[2]
+```
+
+Simultaneous assignment preserves the same lengths, including when the targets are nested.
+
+```py
+def simultaneous_swap(n: int):
+    left = (0, 1)
+    right = (2, 3)
+    for _ in range(n):
+        left, (right,) = (*right,), ((*left,),)
+    reveal_type(len(left))  # revealed: Literal[2]
+    reveal_type(len(right))  # revealed: Literal[2]
+```
+
+### Copying tuples of different finite lengths
+
+Copying a tuple preserves its possible lengths even when they differ. Selecting a replacement tuple
+can add another possible length without making the lengths unbounded.
+
+```py
+def copy_alternatives(n: int, flag: bool):
+    value = () if flag else (0, 1)
+    for _ in range(n):
+        value = (*value,)
+    reveal_type(len(value))  # revealed: Literal[0, 2]
+
+def replace_or_copy(n: int, flag: bool):
+    value = (0, 1)
+    for _ in range(n):
+        value = (*(value if flag else (2, 3, 4)),)
+    reveal_type(len(value))  # revealed: Literal[2, 3]
+```
+
+### Copying tuples through list literals
+
+A list literal unpacked immediately preserves its element count. A list stored in a variable can be
+mutated, so its initializer alone does not determine the length of a later tuple copy.
+
+```py
+def through_literal(n: int):
+    value = (0, 1)
+    for _ in range(n):
+        value = (*[*value],)
+    reveal_type(len(value))  # revealed: Literal[2]
+
+def through_mutable_list(n: int):
+    items = [0]
+    value = (0,)
+    for _ in range(n):
+        items.append(1)
+        value = (*items,)
+    reveal_type(len(value))  # revealed: int
+```
+
+### Repeated tuple duplication
+
+Duplicating an empty tuple keeps it empty. Starting with a nonempty tuple instead doubles the length
+on every iteration, so the result has no finite upper bound on its length.
+
+```py
+def duplicate_empty(n: int):
+    value = ()
+    for _ in range(n):
+        value = (*value, *value)
+    reveal_type(value)  # revealed: tuple[()]
+    reveal_type(len(value))  # revealed: Literal[0]
+
+def duplicate_nonempty(n: int):
+    value = (0,)
+    for _ in range(n):
+        value = (*value, *value)
+    reveal_type(value)  # revealed: tuple[Literal[0]] | tuple[Divergent, ...]
+    reveal_type(len(value))  # revealed: int
 ```
 
 ### Recursive tuples with a dynamic initial value
@@ -1852,7 +1982,26 @@ def grow(n: int):
     value = (0,)
     for _ in range(n):
         value = (*value, value)
-    reveal_type(value)  # revealed: tuple[Literal[0]] | (tuple[*tuple[Divergent, ...], Divergent])
+    reveal_type(value)  # revealed: tuple[Literal[0]] | tuple[*tuple[Divergent, ...], Divergent]
+```
+
+### Mutually growing tuple expansions
+
+Each tuple copies the previous contents of the other and adds an element. Their lengths are
+unbounded, but the last element of `right` remains `1` whenever the loop executes.
+
+```py
+def grow(n: int):
+    left = (0,)
+    right = ("begin",)
+    for _ in range(n):
+        previous = left
+        left = (*right, left)
+        right = (*previous, 1)
+    reveal_type(len(left))  # revealed: int
+    # revealed: tuple[Literal["begin"]] | tuple[*tuple[Literal[0] | Divergent, ...], Literal[1]]
+    reveal_type(right)
+    reveal_type(right[-1])  # revealed: Literal["begin", 1]
 ```
 
 ### Mutually recursive loop bindings
@@ -1868,9 +2017,9 @@ def build(n: int):
         previous = left
         left = (right, 1)
         right = (previous, "end")
-    # revealed: (tuple[(μa0. tuple[Literal["end"] | (tuple[(a0 | Literal["start"]) | Literal[1], ...] | Literal[1]), ...]) | Literal["start", 1], ...]) | Literal[1]
+    # revealed: (μa0. tuple[tuple[a0 | Literal[1], Literal["end"]] | Literal["start"], Literal[1]]) | Literal[1]
     reveal_type(left)
-    # revealed: (μa0. tuple[(tuple[a0 | Literal["start", 1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start"]
+    # revealed: (μa0. tuple[tuple[a0 | Literal["start"], Literal[1]] | Literal[1], Literal["end"]]) | Literal["start"]
     reveal_type(right)
 ```
 

@@ -7,7 +7,9 @@ use ruff_python_ast::name::Name;
 use salsa::plumbing::AsId;
 use ty_python_core::definition::Definition;
 
-use super::{RecursiveMapping, RecursiveOrigin, RecursiveSubstitution, RecursiveType};
+use super::{
+    RecursiveMapping, RecursiveOrigin, RecursiveSubstitution, RecursiveType, TupleLengthAnalysis,
+};
 use crate::types::class::ImplicitAttributeName;
 use crate::types::constraints::{ConstraintSet, ConstraintSetBuilder, SolutionPaths, Solutions};
 use crate::types::generics::walk_specialization_types;
@@ -58,8 +60,14 @@ impl<'db> InferenceKey<'db> {
 
     /// Acyclic values remain direct. Recursive reads retain the identity of their defining query.
     fn value(self, db: &'db dyn Db, body: Type<'db>) -> Type<'db> {
-        if matches!(body, Type::Recursive(recursive) if recursive.inference_key(db).is_some())
-            || !RecursiveInputs::contains(db, &self.environment(db), [body])
+        let env = self.environment(db);
+        if !RecursiveInputs::contains(db, &env, [body]) {
+            body
+        } else if TupleLengthAnalysis::is_unbounded(db, env.program(db), self) {
+            // Growing expansions use the ordinary cycle approximation from their
+            // first read, before unfolding can embed provisional recursive solutions.
+            RecursiveMapping::approximate_inference(db, &env, body, self.fallback())
+        } else if matches!(body, Type::Recursive(recursive) if recursive.inference_key(db).is_some())
         {
             body
         } else {
@@ -148,12 +156,6 @@ impl<'db> InferenceKey<'db> {
         let builder = ConstraintSetBuilder::new();
         let mut constraints = ConstraintSet::from_bool(&builder, true);
         for (body, variable) in equations.values().zip(&variables) {
-            let body = body.apply_type_mapping_impl(
-                db,
-                &TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::WidenTuples)),
-                TypeContext::default(),
-                &visitor,
-            );
             let body = body.apply_type_mapping_impl(db, &mapping, TypeContext::default(), &visitor);
             constraints = constraints.and(db, &builder, || {
                 ConstraintSet::constrain_typevar(db, &env, &builder, *variable, body, body)
