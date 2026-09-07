@@ -15,8 +15,8 @@ use crate::types::infer::{InferExpression, infer_definition_types, infer_express
 use crate::types::typevar::TypeVarSet;
 use crate::types::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
 use crate::types::{
-    ApplyTypeMappingVisitor, BoundTypeVarInstance, DynamicType, Type, TypeContext, TypeMapping,
-    TypeVarVariance, any_over_type,
+    ApplyTypeMappingVisitor, BoundTypeVarInstance, DivergentType, DynamicType, Type, TypeContext,
+    TypeMapping, TypeVarVariance, any_over_type,
 };
 use crate::{Db, FxIndexMap, Program, ProgramEnvironment, TAINTED_CYCLES};
 
@@ -84,7 +84,7 @@ impl<'db> InferenceKey<'db> {
             InferenceQuery::Expression(input) => input.as_id(),
             InferenceQuery::Attribute(attribute) => attribute.as_id(),
         };
-        Type::divergent(id)
+        Type::Divergent(DivergentType::from_inference(id))
     }
 
     pub(in crate::types) fn solution(self, db: &'db dyn Db) -> Type<'db> {

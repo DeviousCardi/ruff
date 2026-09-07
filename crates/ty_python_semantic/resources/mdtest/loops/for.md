@@ -1867,7 +1867,7 @@ def build(n: int):
         previous = left
         left = (right, 1)
         right = (previous, "end")
-    # revealed: (tuple[Literal["start", 1] | (μa0. tuple[(tuple[Literal[1] | (Literal["start"] | a0), ...] | Literal[1]) | Literal["end"], ...]), ...]) | Literal[1]
+    # revealed: (tuple[(μa0. tuple[(tuple[(a0 | Literal["start"]) | Literal[1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start", 1], ...]) | Literal[1]
     reveal_type(left)
     # revealed: (μa0. tuple[(tuple[a0 | Literal["start", 1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start"]
     reveal_type(right)

@@ -4628,13 +4628,13 @@ class ManyCycles:
         self.x6 = self.x1 + self.x2 + self.x3 + self.x4 + self.x5 + self.x7
         self.x7 = self.x1 + self.x2 + self.x3 + self.x4 + self.x5 + self.x6
 
-        reveal_type(self.x1)  # revealed: Divergent
-        reveal_type(self.x2)  # revealed: Divergent
-        reveal_type(self.x3)  # revealed: Divergent
-        reveal_type(self.x4)  # revealed: Divergent
-        reveal_type(self.x5)  # revealed: Divergent
-        reveal_type(self.x6)  # revealed: Divergent
-        reveal_type(self.x7)  # revealed: Divergent
+        reveal_type(self.x1)  # revealed: int
+        reveal_type(self.x2)  # revealed: int
+        reveal_type(self.x3)  # revealed: int
+        reveal_type(self.x4)  # revealed: int
+        reveal_type(self.x5)  # revealed: int
+        reveal_type(self.x6)  # revealed: int
+        reveal_type(self.x7)  # revealed: int
 
 class ManyCycles2:
     def __init__(self: "ManyCycles2"):
@@ -4643,7 +4643,7 @@ class ManyCycles2:
         self.x3 = [1]
 
     def f1(self: "ManyCycles2"):
-        reveal_type(self.x3)  # revealed: Divergent
+        reveal_type(self.x3)  # revealed: list[int] | list[Divergent] | Unknown | list[Unknown]
 
         self.x1 = [self.x2] + [self.x3]
         self.x2 = [self.x1] + [self.x3]
@@ -4762,8 +4762,8 @@ class NestedListsConcat:
         self.x = [self.x] + []
         self.y = [self.y].__add__(y)
 
-reveal_type(NestedListsConcat().x)  # revealed: Divergent
-reveal_type(NestedListsConcat().y)  # revealed: Divergent
+reveal_type(NestedListsConcat().x)  # revealed: list[int] | list[Divergent] | Unknown
+reveal_type(NestedListsConcat().y)  # revealed: list[int] | list[Divergent] | Unknown
 ```
 
 ### Builtin types attributes

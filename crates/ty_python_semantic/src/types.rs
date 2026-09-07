@@ -2117,11 +2117,14 @@ impl<'db> Type<'db> {
         }
     }
 
-    /// Returns `true` if both `self` and `other` are `Divergent` types originating from the
-    /// same cycle (i.e., sharing the same query ID), regardless of materialization state.
-    fn same_divergent_marker(self, other: Type<'db>) -> bool {
+    /// Whether this marker belongs to the recovering cycle, regardless of materialization.
+    /// Equation approximations adopt the recovering cycle because their defining query
+    /// need not be a Salsa cycle head.
+    fn is_divergent_in_cycle(self, other: Type<'db>) -> bool {
         match (self, other) {
-            (Type::Divergent(left), Type::Divergent(right)) => left.same_marker(right),
+            (Type::Divergent(left), Type::Divergent(right)) => {
+                left.origin == DivergentOrigin::Inference || left.same_marker(right)
+            }
             _ => false,
         }
     }
@@ -2268,27 +2271,17 @@ impl<'db> Type<'db> {
         previous: Self,
         cycle: &salsa::Cycle,
     ) -> Self {
-        if cycle.iteration() > crate::TAINTED_CYCLES
-            && [self, previous].into_iter().any(|ty| {
-                any_over_type(db, env, ty, false, |ty| {
-                    ty.is_divergent()
-                        || matches!(ty, Type::Recursive(recursive) if recursive.alias(db).is_none())
-                })
-            })
-        {
-            // Query references may already have become solutions or approximations.
-            // Stop expanding those results when the provisional iterations do not settle.
-            return Type::divergent(cycle.id());
-        }
-        if recursive::RecursiveInputs::contains(db, env, [self, previous]) {
-            // Give constructor equations the provisional iterations to settle. An
-            // unresolved cycle then uses the existing Divergent recovery domain.
-            return if cycle.iteration() <= crate::TAINTED_CYCLES {
-                self
-            } else {
-                Type::divergent(cycle.id())
-            };
-        }
+        let (current, previous) = if cycle.iteration() > crate::TAINTED_CYCLES {
+            let divergent = Type::divergent(cycle.id());
+            (
+                recursive::RecursiveMapping::approximate_inference(db, env, self, divergent),
+                recursive::RecursiveMapping::approximate_inference(db, env, previous, divergent),
+            )
+        } else if recursive::RecursiveInputs::contains(db, env, [self, previous]) {
+            return self;
+        } else {
+            (self, previous)
+        };
         // When we encounter a salsa cycle, we want to avoid oscillating between two or more types
         // without converging on a fixed-point result. Most of the time, we union together the
         // types from each cycle iteration to ensure that our result is monotonic, even if we
@@ -2304,19 +2297,20 @@ impl<'db> Type<'db> {
         // still ensures convergence in cases that are prone to oscillation.
         if cycle.iteration() <= crate::TAINTED_CYCLES {
             let self_degraded_by_overload =
-                any_over_type(db, env, self, false, |ty| {
+                any_over_type(db, env, current, false, |ty| {
                     matches!(ty, Type::Dynamic(DynamicType::AmbiguousOverload(_)))
-                }) && !any_over_type(db, env, self, false, |ty| ty.is_divergent())
+                }) && !any_over_type(db, env, current, false, |ty| ty.is_divergent())
                     && any_over_type(db, env, previous, false, |ty| ty.is_divergent());
             // Generally, the precision of type inference improves with each iteration.
             // However, overload is an exception; as iterations progress, overload matching may become ambiguous, and a reversal of precision can occur.
             // This kind of precision degradation can be determined by whether the type contains `DynamicType::AmbiguousOverload`.
             if self_degraded_by_overload {
-                UnionType::from_elements_cycle_recovery(db, env, [previous, self])
+                UnionType::from_elements_cycle_recovery(db, env, [previous, current])
             } else {
-                self
+                current
             }
-        } else if let (Type::GenericAlias(current), Type::GenericAlias(previous)) = (self, previous)
+        } else if let (Type::GenericAlias(current), Type::GenericAlias(previous)) =
+            (current, previous)
             && let Some(merged) = current.merge_cycle_recovery(db, previous)
         {
             Type::GenericAlias(merged)
@@ -2326,7 +2320,7 @@ impl<'db> Type<'db> {
             // where the order of union types is different between the previous and current cycle.
             // We should use the previous union type as the base and only add new element types in
             // this cycle, if any.
-            UnionType::from_elements_cycle_recovery(db, env, [previous, self])
+            UnionType::from_elements_cycle_recovery(db, env, [previous, current])
         }
         .recursive_type_normalized_impl_with_cycle(db, env, cycle)
     }
@@ -3425,7 +3419,7 @@ impl<'db> Type<'db> {
         div: Type<'db>,
         nested: bool,
     ) -> Option<Self> {
-        if nested && self.same_divergent_marker(div) {
+        if nested && self.is_divergent_in_cycle(div) {
             return None;
         }
         match self {
@@ -3491,7 +3485,18 @@ impl<'db> Type<'db> {
                 .type_argument(db)
                 .recursive_type_normalized_impl(db, env, div, true)
                 .map(|ty| TypeFormType::from_type_expression(db, ty)),
-            Type::Divergent(_) => Some(self),
+            Type::Divergent(divergent) => {
+                if divergent.origin == DivergentOrigin::Inference
+                    && let Type::Divergent(cycle) = div
+                {
+                    Some(Type::Divergent(DivergentType {
+                        materialization: divergent.materialization,
+                        ..cycle
+                    }))
+                } else {
+                    Some(self)
+                }
+            }
             Type::Dynamic(dynamic) => Some(Type::Dynamic(dynamic.recursive_type_normalized())),
             Type::TypedDict(_) => {
                 // TODO: Normalize TypedDicts
@@ -10766,11 +10771,20 @@ impl<'db> TypeMapping<'_, 'db> {
 /// For detailed properties of this type, see the unit test at the end of the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DivergentType {
-    /// The query ID that caused the cycle.
+    /// The ID of the cycle head or approximated inference query.
     id: salsa::Id,
+    origin: DivergentOrigin,
     /// If this divergent marker has been materialized, preserve whether it should behave like the
     /// top (`object`) or bottom (`Never`) bound while still remaining recognizable as divergent.
     materialization: Option<MaterializationKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DivergentOrigin {
+    Cycle,
+    /// An equation query need not be a Salsa cycle head. Recovery must adopt
+    /// this marker into its own cycle before using it to stop structural growth.
+    Inference,
 }
 
 // The Salsa heap is tracked separately.
@@ -10780,18 +10794,27 @@ impl DivergentType {
     const fn new(id: salsa::Id) -> Self {
         Self {
             id,
+            origin: DivergentOrigin::Cycle,
             materialization: None,
         }
     }
 
+    /// Approximate a query reference until recovery associates it with a cycle head.
+    const fn from_inference(id: salsa::Id) -> Self {
+        Self {
+            origin: DivergentOrigin::Inference,
+            ..Self::new(id)
+        }
+    }
+
     fn same_marker(self, other: Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.origin == other.origin
     }
 
     const fn materialized(self, kind: MaterializationKind) -> Self {
         Self {
-            id: self.id,
             materialization: Some(kind),
+            ..self
         }
     }
 

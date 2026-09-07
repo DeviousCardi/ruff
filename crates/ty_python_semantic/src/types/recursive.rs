@@ -65,6 +65,9 @@ impl<'db> RecursiveVar<'db> {
             .arguments(db)
             .map(|arguments| arguments.apply_type_mapping_impl(db, mapping, &[], visitor));
         match mapping {
+            TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Approximate(
+                divergent,
+            ))) if self.depth(db) == visitor.recursive_depth => *divergent,
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Unfold(recursive)))
                 if self.depth(db) == visitor.recursive_depth =>
             {
@@ -108,6 +111,7 @@ enum RecursiveSubstitution<'a, 'db> {
     Unfold(RecursiveType<'db>),
     Bind(RecursiveType<'db>),
     Replace(&'a [(RecursiveType<'db>, Type<'db>)]),
+    Approximate(Type<'db>),
     WidenTuples,
     Reindex(&'a [usize]),
     Rebuild(&'a [Type<'db>]),
@@ -115,6 +119,21 @@ enum RecursiveSubstitution<'a, 'db> {
 }
 
 impl<'db> RecursiveMapping<'_, 'db> {
+    /// Replace anonymous recursive backedges without requesting inference or discarding constructors.
+    pub(super) fn approximate_inference(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        ty: Type<'db>,
+        divergent: Type<'db>,
+    ) -> Type<'db> {
+        ty.apply_type_mapping(
+            db,
+            env,
+            &TypeMapping::Recursive(Self(RecursiveSubstitution::Approximate(divergent))),
+            TypeContext::default(),
+        )
+    }
+
     /// Whether this structural mapping forgets tuple positions in inference equations.
     pub(super) const fn widens_tuples(self) -> bool {
         matches!(self.0, RecursiveSubstitution::WidenTuples)
@@ -520,6 +539,14 @@ impl<'db> RecursiveType<'db> {
         visitor: &ApplyTypeMappingVisitor<'_, 'db>,
     ) -> Type<'db> {
         match mapping {
+            TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Approximate(_)))
+                if self.alias(db).is_none() =>
+            {
+                // The stored body starts at depth zero inside this closed binder.
+                let visitor = ApplyTypeMappingVisitor::new(visitor.env);
+                self.body(db)
+                    .apply_type_mapping_impl(db, mapping, tcx, &visitor)
+            }
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
                 replacements,
             ))) if let Some((_, replacement)) =

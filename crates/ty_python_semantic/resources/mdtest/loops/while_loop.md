@@ -553,7 +553,7 @@ def advance(data: bytes, offset: int) -> None:
             raise ValueError
         offset += step
         # TODO: The offset should retain its `int` type.
-        reveal_type(offset)  # revealed: Divergent | Divergent
+        reveal_type(offset)  # revealed: int | Unknown
 ```
 
 ### Loop updates guarded by compound conditions converge
@@ -571,7 +571,7 @@ def read_records(offset: int, end: int) -> None:
         if not isinstance(value, int) or not isinstance(size, int) or not 0 <= size <= end - offset:
             raise ValueError
         offset += size
-        reveal_type(offset)  # revealed: Divergent | Divergent
+        reveal_type(offset)  # revealed: int
 ```
 
 ### Worklists guarded by chained comparisons converge
@@ -618,7 +618,7 @@ class Inventory:
                 pass
             if item and item.after:
                 self.after = item.after
-                reveal_type(self.after)  # revealed: Divergent
+                reveal_type(self.after)  # revealed: str & ~AlwaysFalsy
 ```
 
 ### Monotonic widening can keep stale loopback bindings reachable
