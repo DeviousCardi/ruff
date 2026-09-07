@@ -260,10 +260,30 @@ static_assert(is_equivalent_to(TypeOf[Ring().c], C))  # error: [static-assert-er
 static_assert(is_equivalent_to(TypeOf[Ring().d], D))  # error: [static-assert-error]
 ```
 
+## Mutually recursive attributes with the same type
+
+Two attributes can refer to each other and have the same recursive type. Each type is displayed with
+a single `μ` binder.
+
+```py
+class Same:
+    def __init__(self):
+        self.left = 0
+        self.right = 0
+
+    def update(self, other: "Same"):
+        self.left = (other.right,)
+        self.right = (other.left,)
+
+reveal_type(Same().left)  # revealed: μa0. int | tuple[a0]
+reveal_type(Same().right)  # revealed: μa0. int | tuple[a0]
+```
+
 ## Self-reference and mutual references
 
 An attribute can refer both to itself and to another recursively defined attribute. The inferred
-types preserve the initial values at each level.
+types preserve the initial values at each level. The type of `a` is displayed with one `μ` binder.
+Starting from `b`, the display uses two bound variables to name the shared recursive type of `a`.
 
 ```toml
 [environment]
@@ -281,6 +301,9 @@ class Branches:
     def step(self, other: "Branches"):
         self.a = (other.a, other.b)
         self.b = (other.a,)
+
+reveal_type(Branches().a)  # revealed: μa0. tuple[a0, tuple[a0] | str] | int
+reveal_type(Branches().b)  # revealed: μ{a0; a1 = tuple[a1, a0] | int}. tuple[a1] | str
 
 type A = int | tuple[A, B]
 type B = str | tuple[A]
