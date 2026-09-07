@@ -1726,24 +1726,21 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     .collect();
                 if members.len() == 1 {
                     write!(f, "μa{offset}. ")?;
-                    recursive
-                        .unfold(db, self.env)
-                        .display_with(db, self.env, settings)
-                        .fmt_detailed(f)?;
-                    return Ok(());
-                }
-                f.write_str("letrec ")?;
-                for (index, member) in members.into_iter().enumerate() {
-                    if index != 0 {
-                        f.write_str("; ")?;
+                } else {
+                    write!(f, "μ{{a{offset}")?;
+                    for (index, member) in members.into_iter().enumerate().skip(1) {
+                        write!(f, "; a{} = ", offset + index)?;
+                        member
+                            .unfold(db, self.env)
+                            .display_with(db, self.env, settings.clone())
+                            .fmt_detailed(f)?;
                     }
-                    write!(f, "a{} = ", offset + index)?;
-                    member
-                        .unfold(db, self.env)
-                        .display_with(db, self.env, settings.clone())
-                        .fmt_detailed(f)?;
+                    f.write_str("}. ")?;
                 }
-                write!(f, " in a{offset}")
+                recursive
+                    .unfold(db, self.env)
+                    .display_with(db, self.env, settings)
+                    .fmt_detailed(f)
             }
             Type::NewTypeInstance(newtype) => f.with_type(self.ty).write_str(newtype.name(db)),
         }

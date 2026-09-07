@@ -2000,7 +2000,7 @@ def grow(n: int):
         left = (*right, left)
         right = (*previous, 1)
     reveal_type(len(left))  # revealed: int
-    # revealed: tuple[Literal["begin"]] | tuple[*tuple[letrec a0 = a1 | Literal[0, "begin", 1] | tuple[Literal[0]]; a1 = tuple[*tuple[a0, ...], a1 | tuple[Literal[0]]] in a0, ...], Literal[1]]
+    # revealed: tuple[Literal["begin"]] | tuple[*tuple[μ{a0; a1 = tuple[*tuple[a0, ...], a1 | tuple[Literal[0]]]}. a1 | Literal[0, "begin", 1] | tuple[Literal[0]], ...], Literal[1]]
     reveal_type(right)
     reveal_type(right[-1])  # revealed: Literal["begin", 1]
     if isinstance(left[-1], tuple):

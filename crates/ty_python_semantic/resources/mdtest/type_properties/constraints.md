@@ -1370,7 +1370,7 @@ def lower_bounds[T, U, V, W]():
         & ConstraintSet.lower_bound(tuple[W], V)
         & ConstraintSet.lower_bound(tuple[T], W)
     )
-    # revealed: tuple[Solution[U=letrec a0 = a1 | a2 | tuple[a1]; a1 = tuple[a2]; a2 = tuple[a0] in a0]]
+    # revealed: tuple[Solution[U=μ{a0; a1 = tuple[a2]; a2 = tuple[a0]}. a1 | a2 | tuple[a1]]]
     reveal_type(constraints.solutions_for(U, inferable=tuple[T, U, V, W]))
 ```
 
@@ -1392,15 +1392,17 @@ def with_finite_parameter[E, T, U, V, W]():
 
 ### Shared recursive structure
 
-Both equations can contain direct and mutual references. The display uses `letrec` to bind several
-names simultaneously, followed by `in` and the selected type. Each shared part is defined once.
+Both equations can contain direct and mutual references. In `μ{a0; a1 = …}. body`, `a0` denotes the
+whole recursive type defined by `body`, and `a1` names a shared part. Both names are bound
+throughout the definitions and the body. Each shared part is defined once. Without auxiliary
+definitions, the notation is `μa0. body`.
 
 ```py
 from ty_extensions._internal import ConstraintSet
 
 def nested[T, U]():
     constraints = ConstraintSet.equality(T, tuple[T, U]) & ConstraintSet.equality(U, list[tuple[T, U]])
-    # revealed: tuple[Solution[T=μa0. tuple[a0, list[a0]], U=letrec a0 = list[a1]; a1 = tuple[a1, a0] in a0]]
+    # revealed: tuple[Solution[T=μa0. tuple[a0, list[a0]], U=μ{a0; a1 = tuple[a1, a0]}. list[a1]]]
     reveal_type(constraints.solutions(inferable=tuple[T, U]))
 ```
 
@@ -1425,11 +1427,11 @@ def equivalent[A, B]():
     left = ConstraintSet.equality(A, list[B])
     right = ConstraintSet.equality(B, str | set[B] | tuple[A])
     inlined = ConstraintSet.equality(B, str | set[B] | tuple[list[B]])
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
+    # revealed: tuple[Solution[A=μ{a0; a1 = tuple[a0] | set[a1] | str}. list[a1]]]
     reveal_type((left & right).solutions_for(A, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
+    # revealed: tuple[Solution[A=μ{a0; a1 = tuple[a0] | set[a1] | str}. list[a1]]]
     reveal_type((right & left).solutions_for(A, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
+    # revealed: tuple[Solution[A=μ{a0; a1 = tuple[a0] | set[a1] | str}. list[a1]]]
     reveal_type((left & inlined).solutions_for(A, inferable=tuple[A, B]))
     # revealed: tuple[Solution[B=μa0. tuple[list[a0]] | set[a0] | str]]
     reveal_type((left & right).solutions_for(B, inferable=tuple[A, B]))
@@ -1461,7 +1463,7 @@ def branching[T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11]():
         & ConstraintSet.equality(T10, tuple[Literal[10], T11, T0])
         & ConstraintSet.equality(T11, tuple[Literal[11], T0, T1])
     )
-    # revealed: tuple[Solution[T0=letrec a0 = tuple[Literal[0], a1, a2]; a1 = tuple[Literal[1], a2, a3]; a2 = tuple[Literal[2], a3, a4]; a3 = tuple[Literal[3], a4, a5]; a4 = tuple[Literal[4], a5, a6]; a5 = tuple[Literal[5], a6, a7]; a6 = tuple[Literal[6], a7, a8]; a7 = tuple[Literal[7], a8, a9]; a8 = tuple[Literal[8], a9, a10]; a9 = tuple[Literal[9], a10, a11]; a10 = tuple[Literal[10], a11, a0]; a11 = tuple[Literal[11], a0, a1] in a0]]
+    # revealed: tuple[Solution[T0=μ{a0; a1 = tuple[Literal[1], a2, a3]; a2 = tuple[Literal[2], a3, a4]; a3 = tuple[Literal[3], a4, a5]; a4 = tuple[Literal[4], a5, a6]; a5 = tuple[Literal[5], a6, a7]; a6 = tuple[Literal[6], a7, a8]; a7 = tuple[Literal[7], a8, a9]; a8 = tuple[Literal[8], a9, a10]; a9 = tuple[Literal[9], a10, a11]; a10 = tuple[Literal[10], a11, a0]; a11 = tuple[Literal[11], a0, a1]}. tuple[Literal[0], a1, a2]]]
     reveal_type(constraints.solutions_for(T0, inferable=tuple[T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11]))
 ```
 
@@ -1494,7 +1496,7 @@ def components[A, B, C]():
     constraints = (
         ConstraintSet.equality(A, tuple[A, B, B]) & ConstraintSet.equality(B, tuple[B, C, C]) & ConstraintSet.equality(C, list[C])
     )
-    # revealed: tuple[Solution[A=letrec a0 = tuple[a0, a1, a1]; a1 = tuple[a1, a2, a2]; a2 = list[a2] in a0]]
+    # revealed: tuple[Solution[A=μ{a0; a1 = tuple[a1, a2, a2]; a2 = list[a2]}. tuple[a0, a1, a1]]]
     reveal_type(constraints.solutions_for(A, inferable=tuple[A, B, C]))
 ```
 
