@@ -19,6 +19,30 @@ pub enum RecursiveOperation {
     Promote(PromotionMode, PromotionKind),
 }
 
+impl RecursiveOperation {
+    /// Whether this step can make an earlier operation effective again.
+    /// Unknown combinations reset the earlier operation's idempotence guarantee.
+    fn invalidates(self, earlier: Self) -> bool {
+        match (self, earlier) {
+            (Self::Promote(mode, kind), Self::Promote(earlier_mode, earlier_kind))
+                if mode == earlier_mode =>
+            {
+                // Regular promotion introduces no class literals. Singleton promotion
+                // introduces only unions with Unknown, which regular promotion traverses.
+                // Class promotion can expose default type arguments, so the reverse
+                // ordering must still allow regular promotion to run again.
+                kind != earlier_kind
+                    && !matches!(
+                        (kind, earlier_kind),
+                        (PromotionKind::Regular, PromotionKind::ClassLiteralsOnly)
+                            | (PromotionKind::SingletonsOnly, PromotionKind::Regular)
+                    )
+            }
+            _ => true,
+        }
+    }
+}
+
 impl<'db> RecursiveOperations<'db> {
     /// Apply each step, deferring it again when the body contains query references.
     pub(super) fn apply(
@@ -52,9 +76,12 @@ impl<'db> RecursiveType<'db> {
         let mut steps = self
             .operations(db)
             .map_or_else(Vec::new, |operations| operations.steps(db).to_vec());
-        // Idempotence only removes adjacent equal promotions; intervening operations
-        // can introduce new literals or change which children are promoted.
-        if steps.last() == Some(&step) {
+        if steps
+            .iter()
+            .rev()
+            .take_while(|previous| !previous.invalidates(step))
+            .any(|previous| *previous == step)
+        {
             return self;
         }
         steps.push(step);
