@@ -1701,6 +1701,14 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                 )
             }
             Type::Recursive(recursive) => {
+                if let Some(key) = recursive.inference_key(db) {
+                    let solution = key.solution(db);
+                    if solution != self.ty {
+                        return solution
+                            .display_with(db, self.env, self.settings.clone())
+                            .fmt_detailed(f);
+                    }
+                }
                 if let Some(index) = self
                     .settings
                     .recursive_binders

@@ -1425,15 +1425,15 @@ def equivalent[A, B]():
     left = ConstraintSet.equality(A, list[B])
     right = ConstraintSet.equality(B, str | set[B] | tuple[A])
     inlined = ConstraintSet.equality(B, str | set[B] | tuple[list[B]])
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | str | set[a1] in a0]]
+    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
     reveal_type((left & right).solutions_for(A, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | str | set[a1] in a0]]
+    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
     reveal_type((right & left).solutions_for(A, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | str | set[a1] in a0]]
+    # revealed: tuple[Solution[A=letrec a0 = list[a1]; a1 = tuple[a0] | set[a1] | str in a0]]
     reveal_type((left & inlined).solutions_for(A, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[B=μa0. tuple[list[a0]] | str | set[a0]]]
+    # revealed: tuple[Solution[B=μa0. tuple[list[a0]] | set[a0] | str]]
     reveal_type((left & right).solutions_for(B, inferable=tuple[A, B]))
-    # revealed: tuple[Solution[B=μa0. tuple[list[a0]] | str | set[a0]]]
+    # revealed: tuple[Solution[B=μa0. tuple[list[a0]] | set[a0] | str]]
     reveal_type(inlined.solutions_for(B, inferable=tuple[B]))
 ```
 

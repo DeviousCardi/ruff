@@ -239,7 +239,7 @@ pub fn check_types(db: &dyn Db, file: ProgramFile<'_>) -> Vec<Diagnostic> {
 /// Infer the type of a binding.
 pub(crate) fn binding_type<'db>(db: &'db dyn Db, definition: Definition<'db>) -> Type<'db> {
     let inference = infer_definition_types(db, definition);
-    inference.binding_type(definition)
+    inference.binding_type(db, definition)
 }
 
 /// Returns whether a definition may represent a value that exists at runtime.
@@ -277,7 +277,7 @@ pub(crate) fn may_exist_at_runtime<'db>(db: &'db dyn Db, definition: Definition<
     }
 
     let inference = infer_definition_types(db, definition);
-    let ty = inference.binding_type(definition);
+    let ty = inference.binding_type(db, definition);
 
     // A class or function decorated with `@type_check_only` never exists at runtime.
     if ty.is_type_check_only(db)
@@ -2173,7 +2173,7 @@ impl<'db> Type<'db> {
                 DynamicType::Unknown
                     | DynamicType::UnknownGeneric(_)
                     | DynamicType::UnknownLambdaParameter
-                    | DynamicType::AmbiguousOverload
+                    | DynamicType::AmbiguousOverload(_)
             )
         )
     }
@@ -2268,10 +2268,26 @@ impl<'db> Type<'db> {
         previous: Self,
         cycle: &salsa::Cycle,
     ) -> Self {
-        if let Type::Recursive(recursive) = previous
-            && let Some(result) = recursive.recover_inference(db, env, self)
+        if cycle.iteration() > crate::TAINTED_CYCLES
+            && [self, previous].into_iter().any(|ty| {
+                any_over_type(db, env, ty, false, |ty| {
+                    ty.is_divergent()
+                        || matches!(ty, Type::Recursive(recursive) if recursive.alias(db).is_none())
+                })
+            })
         {
-            return result;
+            // Query references may already have become solutions or approximations.
+            // Stop expanding those results when the provisional iterations do not settle.
+            return Type::divergent(cycle.id());
+        }
+        if recursive::RecursiveInputs::contains(db, env, [self, previous]) {
+            // Give constructor equations the provisional iterations to settle. An
+            // unresolved cycle then uses the existing Divergent recovery domain.
+            return if cycle.iteration() <= crate::TAINTED_CYCLES {
+                self
+            } else {
+                Type::divergent(cycle.id())
+            };
         }
         // When we encounter a salsa cycle, we want to avoid oscillating between two or more types
         // without converging on a fixed-point result. Most of the time, we union together the
@@ -2289,7 +2305,7 @@ impl<'db> Type<'db> {
         if cycle.iteration() <= crate::TAINTED_CYCLES {
             let self_degraded_by_overload =
                 any_over_type(db, env, self, false, |ty| {
-                    matches!(ty, Type::Dynamic(DynamicType::AmbiguousOverload))
+                    matches!(ty, Type::Dynamic(DynamicType::AmbiguousOverload(_)))
                 }) && !any_over_type(db, env, self, false, |ty| ty.is_divergent())
                     && any_over_type(db, env, previous, false, |ty| ty.is_divergent());
             // Generally, the precision of type inference improves with each iteration.
@@ -2344,7 +2360,7 @@ impl<'db> Type<'db> {
             | DynamicType::UnknownGeneric(_)
             | DynamicType::UnspecializedTypeVar
             | DynamicType::UnknownLambdaParameter
-            | DynamicType::AmbiguousOverload => false,
+            | DynamicType::AmbiguousOverload(_) => false,
             DynamicType::Todo(_) => true,
         })
     }
@@ -2499,6 +2515,9 @@ impl<'db> Type<'db> {
             Type::NominalInstance(instance) => Some(instance.class(db, env)),
             Type::ProtocolInstance(instance) => instance.class_origin(db).map(|class| *class),
             Type::TypeAlias(alias) => alias.value_type(db).nominal_class(db, env),
+            Type::Recursive(recursive) => {
+                recursive.map_or(db, env, None, |unfolded| unfolded.nominal_class(db, env))
+            }
             Type::NewTypeInstance(newtype) => newtype.concrete_base_type(db).nominal_class(db, env),
             Type::TypeVar(typevar) => {
                 let TypeVarBoundOrConstraints::UpperBound(bound) =
@@ -3163,7 +3182,7 @@ impl<'db> Type<'db> {
                 | DynamicType::UnknownLambdaParameter
                 | DynamicType::Todo(_)
                 | DynamicType::InvalidConcatenateUnknown
-                | DynamicType::AmbiguousOverload => false,
+                | DynamicType::AmbiguousOverload(_) => false,
             },
         }
     }
@@ -3932,7 +3951,7 @@ impl<'db> Type<'db> {
 
     #[salsa::tracked(
         returns(copy),
-        cycle_initial=|db, id, key: MemberLookupKey<'db>| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
+        cycle_initial=|_, id, _| Place::bound(Type::divergent(id)).into(),
         cycle_fn=|db, cycle, previous: &PlaceAndQualifiers<'db>, member: PlaceAndQualifiers<'db>, key: MemberLookupKey<'db>| {
             member.cycle_normalized(db, &ProgramEnvironment::from_program(key.program(db)), *previous, cycle)
         },
@@ -5426,7 +5445,7 @@ impl<'db> Type<'db> {
     ) -> MemberLookupResult<'db> {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|db, id, key: MemberLookupKey<'db>| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
+            cycle_initial=|_, id, _| Place::bound(Type::divergent(id)).into(),
             cycle_fn=|db, cycle, previous: &MemberLookupResult<'db>, member: MemberLookupResult<'db>, key: MemberLookupKey<'db>| {
                 cycle_normalized_member_lookup(db, &ProgramEnvironment::from_program(key.program(db)), member, *previous, cycle)
             },
@@ -5441,7 +5460,7 @@ impl<'db> Type<'db> {
 
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|db, id, key: MemberLookupKey<'db>, _| Place::bound(RecursiveType::initial_inference(db, &ProgramEnvironment::from_program(key.program(db)), id)).into(),
+            cycle_initial=|_, id, _, _| Place::bound(Type::divergent(id)).into(),
             cycle_fn=|db, cycle, previous: &MemberLookupResult<'db>, member: MemberLookupResult<'db>, key: MemberLookupKey<'db>, _| {
                 cycle_normalized_member_lookup(db, &ProgramEnvironment::from_program(key.program(db)), member, *previous, cycle)
             },
@@ -8879,7 +8898,7 @@ impl<'db> Type<'db> {
         if matches!(
             type_mapping,
             TypeMapping::Promote(_, PromotionKind::SingletonsOnly)
-        ) && !matches!(self, Type::NominalInstance(_))
+        ) && !matches!(self, Type::NominalInstance(_) | Type::Recursive(_))
         {
             return self;
         }
@@ -10003,7 +10022,7 @@ impl<'db> Type<'db> {
                 DynamicType::Unknown
                 | DynamicType::UnknownGeneric(_)
                 | DynamicType::UnknownLambdaParameter
-                | DynamicType::AmbiguousOverload,
+                | DynamicType::AmbiguousOverload(_),
             ) => Type::SpecialForm(SpecialFormType::Unknown).definition(db, env),
             Self::Divergent(_) => Type::SpecialForm(SpecialFormType::Divergent).definition(db, env),
             Self::Dynamic(DynamicType::Todo(_)) => {
@@ -10810,7 +10829,7 @@ pub enum DynamicType<'db> {
     InvalidConcatenateUnknown,
     /// A special variant that indicates the result of overload matching is ambiguous.
     /// Ref: <https://typing.python.org/en/latest/spec/overload.html#step-5>
-    AmbiguousOverload,
+    AmbiguousOverload(Option<recursive::RecursiveInputs<'db>>),
     /// Temporary type for symbols that can't be inferred yet because of missing implementations.
     ///
     /// This variant should eventually be removed once ty is spec-compliant.
@@ -10848,7 +10867,7 @@ impl std::fmt::Display for DynamicType<'_> {
             | DynamicType::UnknownGeneric(_)
             | DynamicType::UnknownLambdaParameter
             | DynamicType::InvalidConcatenateUnknown
-            | DynamicType::AmbiguousOverload => f.write_str("Unknown"),
+            | DynamicType::AmbiguousOverload(_) => f.write_str("Unknown"),
             DynamicType::UnspecializedTypeVar => f.write_str("UnspecializedTypeVar"),
             // `DynamicType::Todo`'s display should be explicit that is not a valid display of
             // any other type

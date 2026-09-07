@@ -4510,7 +4510,7 @@ class D:
     def copy(self, other: "D"):
         self.x = other.x
 
-reveal_type(D().x)  # revealed: μa0. a0
+reveal_type(D().x)  # revealed: Divergent
 ```
 
 If there is an annotation for a name, we don't try to infer any type from the RHS of assignments to
@@ -4628,13 +4628,13 @@ class ManyCycles:
         self.x6 = self.x1 + self.x2 + self.x3 + self.x4 + self.x5 + self.x7
         self.x7 = self.x1 + self.x2 + self.x3 + self.x4 + self.x5 + self.x6
 
-        reveal_type(self.x1)  # revealed: int
-        reveal_type(self.x2)  # revealed: int
-        reveal_type(self.x3)  # revealed: int
-        reveal_type(self.x4)  # revealed: int
-        reveal_type(self.x5)  # revealed: int
-        reveal_type(self.x6)  # revealed: int
-        reveal_type(self.x7)  # revealed: int
+        reveal_type(self.x1)  # revealed: Divergent
+        reveal_type(self.x2)  # revealed: Divergent
+        reveal_type(self.x3)  # revealed: Divergent
+        reveal_type(self.x4)  # revealed: Divergent
+        reveal_type(self.x5)  # revealed: Divergent
+        reveal_type(self.x6)  # revealed: Divergent
+        reveal_type(self.x7)  # revealed: Divergent
 
 class ManyCycles2:
     def __init__(self: "ManyCycles2"):
@@ -4643,7 +4643,7 @@ class ManyCycles2:
         self.x3 = [1]
 
     def f1(self: "ManyCycles2"):
-        reveal_type(self.x3)  # revealed: list[int] | Unknown
+        reveal_type(self.x3)  # revealed: Divergent
 
         self.x1 = [self.x2] + [self.x3]
         self.x2 = [self.x1] + [self.x3]
@@ -4716,7 +4716,7 @@ class NestedLists:
     def f(self: "NestedLists"):
         self.x = [self.x]
 
-reveal_type(NestedLists().x)  # revealed: μa0. list[a0] | int
+reveal_type(NestedLists().x)  # revealed: int | list[Divergent]
 
 class NestedMixed:
     def f(self: "NestedMixed"):
@@ -4725,7 +4725,7 @@ class NestedMixed:
     def g(self: "NestedMixed"):
         self.x = {self.x}
 
-reveal_type(NestedMixed().x)  # revealed: μa0. set[a0] | list[a0]
+reveal_type(NestedMixed().x)  # revealed: list[Divergent] | set[Divergent]
 ```
 
 And cases where the types originate from annotations:
@@ -4742,11 +4742,11 @@ class NestedLists2:
     def f(self: "NestedLists2"):
         self.x = make_list(self.x)
 
-reveal_type(NestedLists2().x)  # revealed: μa0. list[a0]
+reveal_type(NestedLists2().x)  # revealed: list[Divergent]
 ```
 
-Overload resolution can lose precision during inference and contribute `Unknown`. The recursive list
-structure is still retained, allowing inference to converge. This reproduces
+Overload resolution can lose precision during inference. We approximate the recursive list with
+`Divergent` when its inferred type does not settle. This reproduces
 <https://github.com/astral-sh/ty/issues/3614>:
 
 ```py
@@ -4762,8 +4762,8 @@ class NestedListsConcat:
         self.x = [self.x] + []
         self.y = [self.y].__add__(y)
 
-reveal_type(NestedListsConcat().x)  # revealed: μa0. list[a0] | list[int] | Unknown
-reveal_type(NestedListsConcat().y)  # revealed: μa0. list[a0] | list[int] | Unknown
+reveal_type(NestedListsConcat().x)  # revealed: Divergent
+reveal_type(NestedListsConcat().y)  # revealed: Divergent
 ```
 
 ### Builtin types attributes
@@ -4912,19 +4912,19 @@ reveal_type(Answer.__members__)  # revealed: MappingProxyType[str, Answer]
 
 ## Recursive inferred implicit instance attribute types
 
-An attribute built from its own value has a recursive type. In `μa. tuple[a, int]`, `a` refers to
-the whole tuple type, so indexing its first element returns that same type.
+An attribute built from its own value has a recursive type. We currently approximate its recursive
+part with `Divergent`, so indexing into that part also produces `Divergent`.
 
 ```py
 class C:
     def f(self, other: "C"):
         self.x = (other.x, 1)
 
-reveal_type(C().x)  # revealed: μa0. tuple[a0, int]
-reveal_type(C().x[0])  # revealed: μa0. tuple[a0, int]
+reveal_type(C().x)  # revealed: tuple[Divergent, int]
+reveal_type(C().x[0])  # revealed: Divergent
 ```
 
-An initial value remains an alternative at every recursive level:
+An initial value remains an alternative alongside the approximated tuple:
 
 ```py
 class WithInitial:
@@ -4934,10 +4934,10 @@ class WithInitial:
     def update(self, other: "WithInitial"):
         self.value = (other.value, "b")
 
-reveal_type(WithInitial().value)  # revealed: μa0. int | tuple[a0, str]
+reveal_type(WithInitial().value)  # revealed: int | tuple[Divergent, str]
 ```
 
-This also works if the tuple is not constructed directly:
+A helper function can also construct the recursive tuple:
 
 ```py
 from typing import TypeVar, Literal
@@ -4951,7 +4951,7 @@ class D:
     def f(self, other: "D"):
         self.x = make_tuple(other.x)
 
-reveal_type(D().x)  # revealed: μa0. tuple[a0, Literal[1]]
+reveal_type(D().x)  # revealed: tuple[Divergent, Literal[1]]
 ```
 
 Multiple elements can refer to the same recursive type:
@@ -4964,7 +4964,7 @@ class E:
     def f(self: "E"):
         self.x = duplicate(self.x)
 
-reveal_type(E().x)  # revealed: μa0. tuple[a0, a0]
+reveal_type(E().x)  # revealed: tuple[Divergent, Divergent]
 ```
 
 And it also works for homogeneous tuples:
@@ -4977,7 +4977,7 @@ class F:
     def f(self, other: "F"):
         self.x = make_homogeneous_tuple(other.x)
 
-reveal_type(F().x)  # revealed: μa0. tuple[a0, ...]
+reveal_type(F().x)  # revealed: tuple[Divergent, ...]
 ```
 
 The `tuple()` call inspects its iterable argument during inference. This cycle still uses

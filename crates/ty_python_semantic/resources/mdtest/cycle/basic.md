@@ -166,7 +166,7 @@ JSONPrimitive = Union[str, int, float, bool, None]
 JSONValue = TypeAliasType("JSONValue", 'Union[JSONPrimitive, Sequence["JSONValue"], Mapping[str, "JSONValue"]]')
 
 def _(x: JSONValue):
-    reveal_type(x)  # revealed: Sequence[JSONValue] | float | None | Mapping[str, JSONValue]
+    reveal_type(x)  # revealed: Divergent
 ```
 
 ## Self-referential legacy type variables
@@ -240,16 +240,16 @@ class C:
         self.c = lambda positional_only=self.c, /: positional_only
         self.d = lambda *, kw_only=self.d: kw_only
 
-        # revealed: (positional: Unknown = ...) -> Unknown | ((positional=...) -> Divergent)
+        # revealed: (positional=...) -> Unknown | Divergent
         reveal_type(self.a)
 
-        # revealed: (*, kw_only=...) -> Unknown | ((*, kw_only=...) -> Divergent)
+        # revealed: (*, kw_only=...) -> Unknown | Divergent
         reveal_type(self.b)
 
-        # revealed: (positional_only: Unknown = ..., /) -> Unknown | ((positional_only=..., /) -> Divergent)
+        # revealed: (positional_only=..., /) -> Unknown | Divergent
         reveal_type(self.c)
 
-        # revealed: (*, kw_only=...) -> Unknown | ((*, kw_only=...) -> Divergent)
+        # revealed: (*, kw_only=...) -> Unknown | Divergent
         reveal_type(self.d)
 ```
 
@@ -465,7 +465,7 @@ which also involved
 from derived import Derived
 
 Derived.decorate
-# revealed: bound method <class 'Derived'>.decorate[T](item_class: type[T]) -> type[T]
+# revealed: Divergent
 reveal_type(Derived.decorate)
 ```
 

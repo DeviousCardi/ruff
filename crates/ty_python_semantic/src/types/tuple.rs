@@ -304,6 +304,25 @@ impl<'db> TupleType<'db> {
         tcx: TypeContext<'db>,
         visitor: &ApplyTypeMappingVisitor<'_, 'db>,
     ) -> Self {
+        if let TypeMapping::Recursive(mapping) = type_mapping
+            && mapping.widens_tuples()
+        {
+            // Constructor inference deliberately forgets tuple positions before solving:
+            // unpacking a recursive tuple can otherwise grow its fixed prefix indefinitely.
+            let elements = self
+                .tuple(db)
+                .iter_element_types(db)
+                .map(|ty| ty.apply_type_mapping_impl(db, type_mapping, tcx, visitor));
+            // Elements inside an existing binder can contain open RecursiveVars.
+            // Build syntax here; semantic union simplification requires closed types.
+            let elements: Box<[_]> = elements.collect();
+            let element = match elements.as_ref() {
+                [] => Type::Never,
+                [element] => *element,
+                _ => Type::Union(UnionType::new(db, elements, RecursivelyDefined::No)),
+            };
+            return TupleType::new_internal(db, self.program(db), TupleSpec::homogeneous(element));
+        }
         if type_mapping.used_in_cycle_recovery() {
             return TupleType::new_internal(
                 db,

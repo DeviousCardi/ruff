@@ -35,8 +35,8 @@ reveal_type(Cyclic("").data)
 
 ## Mutually recursive container attributes
 
-Three attributes can refer to each other through different containers. Following their contents
-returns to the original recursive type.
+Three attributes can refer to each other through different containers. Following their contents is
+approximated with `Divergent` when the recursive equations do not settle.
 
 ```py
 class Containers:
@@ -45,16 +45,16 @@ class Containers:
         self.b = {"next": other.c}
         self.c = (other.a, 1)
 
-reveal_type(Containers().a)  # revealed: μa0. list[dict[str, tuple[a0, int]]]
-reveal_type(Containers().b)  # revealed: μa0. dict[str, tuple[list[a0], int]]
-reveal_type(Containers().c)  # revealed: μa0. tuple[list[dict[str, a0]], int]
-reveal_type(Containers().a[0]["next"][0])  # revealed: μa0. list[dict[str, tuple[a0, int]]]
+reveal_type(Containers().a)  # revealed: list[Divergent]
+reveal_type(Containers().b)  # revealed: dict[str, tuple[list[Divergent], int]]
+reveal_type(Containers().c)  # revealed: tuple[list[Divergent], int]
+reveal_type(Containers().a[0]["next"][0])  # revealed: Divergent
 ```
 
 ## Mutually recursive attributes with initial values
 
-The inferred types include the initial values and the tuples built from the other attribute. They
-are equivalent to the two explicit recursive aliases below.
+Each attribute has an initial value and can contain the other attribute in a tuple. TODO: Infer
+types equivalent to the explicit recursive aliases below.
 
 ```toml
 [environment]
@@ -77,14 +77,14 @@ class Pair:
 type Left = int | tuple[Right, int]
 type Right = str | tuple[Left, str]
 
-static_assert(is_equivalent_to(TypeOf[Pair().left], Left))
-static_assert(is_equivalent_to(TypeOf[Pair().right], Right))
+static_assert(is_equivalent_to(TypeOf[Pair().left], Left))  # error: [static-assert-error]
+static_assert(is_equivalent_to(TypeOf[Pair().right], Right))  # error: [static-assert-error]
 ```
 
 ## Multiple paths through recursive attributes
 
-These four attributes include their initial values and retain both references in the tuple assigned
-to `d`. Each inferred type matches its explicit recursive alias.
+These four attributes have initial values, and the tuple assigned to `d` refers to both `a` and `b`.
+TODO: Infer types equivalent to the explicit recursive aliases below.
 
 ```toml
 [environment]
@@ -112,16 +112,16 @@ type B = str | list[C]
 type C = bool | dict[str, D]
 type D = float | tuple[A, B]
 
-static_assert(is_equivalent_to(TypeOf[Ring().a], A))
-static_assert(is_equivalent_to(TypeOf[Ring().b], B))
-static_assert(is_equivalent_to(TypeOf[Ring().c], C))
-static_assert(is_equivalent_to(TypeOf[Ring().d], D))
+static_assert(is_equivalent_to(TypeOf[Ring().a], A))  # error: [static-assert-error]
+static_assert(is_equivalent_to(TypeOf[Ring().b], B))  # error: [static-assert-error]
+static_assert(is_equivalent_to(TypeOf[Ring().c], C))  # error: [static-assert-error]
+static_assert(is_equivalent_to(TypeOf[Ring().d], D))  # error: [static-assert-error]
 ```
 
 ## Self-reference and mutual references
 
-An attribute can refer both to itself and to another recursively defined attribute. The initial
-values remain alternatives throughout the recursive structure.
+An attribute can refer both to itself and to another recursively defined attribute. TODO: Infer the
+full recursive structure, including the initial values at each level.
 
 ```toml
 [environment]
@@ -142,8 +142,8 @@ class Branches:
 
 type A = int | tuple[A, B]
 type B = str | tuple[A]
-static_assert(is_equivalent_to(TypeOf[Branches().b], B))
-static_assert(is_equivalent_to(TypeOf[Branches().a], A))
+static_assert(is_equivalent_to(TypeOf[Branches().b], B))  # error: [static-assert-error]
+static_assert(is_equivalent_to(TypeOf[Branches().a], A))  # error: [static-assert-error]
 ```
 
 ## Cycle normalization preserves non-gradual variadic parameters

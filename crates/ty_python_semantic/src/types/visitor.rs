@@ -148,6 +148,9 @@ pub(crate) trait TypeVisitor<'db> {
     }
 
     fn visit_recursive_type(&self, db: &'db dyn Db, recursive: RecursiveType<'db>) {
+        if recursive.inference_key(db).is_some() {
+            return;
+        }
         // An inferred recursive type has no separate alias definition: its body
         // is part of the type, including any still-free inference variables.
         if self.should_visit_lazy_type_attributes() || recursive.alias(db).is_none() {
@@ -1063,7 +1066,7 @@ mod tests {
             Type::Dynamic(DynamicType::Unknown),
             Type::Dynamic(DynamicType::UnspecializedTypeVar),
             Type::Dynamic(DynamicType::InvalidConcatenateUnknown),
-            Type::Dynamic(DynamicType::AmbiguousOverload),
+            Type::Dynamic(DynamicType::AmbiguousOverload(None)),
             Type::SpecialForm(SpecialFormType::Any),
         ];
 

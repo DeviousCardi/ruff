@@ -1815,14 +1815,43 @@ for _ in range(1_000_000):
 ### Recursive tuple construction
 
 Wrapping the previous value in a tuple produces a recursive type. The initial value remains an
-alternative because the loop may execute zero times.
+alternative because the loop may execute zero times. Tuple positions inside the recursive part are
+widened to a variable-length tuple.
 
 ```py
 def nest(n: int):
     value = 0
     for _ in range(n):
         value = (value,)
-    reveal_type(value)  # revealed: μa0. Literal[0] | tuple[a0]
+    reveal_type(value)  # revealed: (μa0. tuple[Literal[0] | a0, ...]) | Literal[0]
+```
+
+### Recursive tuples with a dynamic initial value
+
+When the initial value is `Any`, we approximate the recursive part with `Divergent` instead of
+solving a recursive equation containing dynamic types.
+
+```py
+from typing import Any
+
+def nest(initial: Any, n: int):
+    value = initial
+    for _ in range(n):
+        value = (value,)
+    reveal_type(value)  # revealed: (Divergent) | Any
+```
+
+### Unpacking recursively built tuples
+
+A tuple can grow in both length and nesting. We approximate the unresolved recursive part with
+`Divergent`; the initial one-element tuple remains possible when the loop does not run.
+
+```py
+def grow(n: int):
+    value = (0,)
+    for _ in range(n):
+        value = (*value, value)
+    reveal_type(value)  # revealed: tuple[Literal[0]] | (Divergent)
 ```
 
 ### Mutually recursive loop bindings
@@ -1838,9 +1867,9 @@ def build(n: int):
         previous = left
         left = (right, 1)
         right = (previous, "end")
-    # revealed: μa0. tuple[tuple[a0, Literal["end"]] | Literal["start"], Literal[1]] | Literal[1]
+    # revealed: (tuple[Literal["start", 1] | (μa0. tuple[(tuple[Literal[1] | (Literal["start"] | a0), ...] | Literal[1]) | Literal["end"], ...]), ...]) | Literal[1]
     reveal_type(left)
-    # revealed: μa0. tuple[tuple[a0, Literal[1]] | Literal[1], Literal["end"]] | Literal["start"]
+    # revealed: (μa0. tuple[(tuple[a0 | Literal["start", 1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start"]
     reveal_type(right)
 ```
 
@@ -1875,7 +1904,7 @@ for _ in range(1_000_000):
     if x:
         x, y = y, x
     reveal_type(x)  # revealed: Literal[2, 1]
-    reveal_type(y)  # revealed: Literal[2, 1]
+    reveal_type(y)  # revealed: Literal[1, 2]
 ```
 
 ### Bindings in statically unreachable branches are excluded from loopback

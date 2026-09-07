@@ -12,6 +12,7 @@ use crate::{
         infer::infer_unpack_types,
         infer_expression_type, inferred_declaration,
         member::Member,
+        recursive::InferenceQuery,
     },
 };
 use ruff_db::parsed::parsed_module;
@@ -68,15 +69,17 @@ impl<'db> StaticClassLiteral<'db> {
             };
         };
 
-        Self::implicit_attribute_inner(
+        let attribute = ImplicitAttributeName::new(
             db,
-            ImplicitAttributeName::new(
-                db,
-                class_body_scope,
-                &names[name_index],
-                target_method_decorator,
-            ),
-        )
+            class_body_scope,
+            &names[name_index],
+            target_method_decorator,
+        );
+        let mut result = Self::implicit_attribute_inner(db, attribute);
+        result.member = result
+            .member
+            .map_type(|ty| InferenceQuery::Attribute(attribute).value(db, ty));
+        result
     }
 
     #[salsa::tracked(
@@ -350,7 +353,7 @@ pub(super) struct AugmentedBindings<'db> {
 impl get_size2::GetSize for AugmentedBindings<'_> {}
 
 #[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
-struct ImplicitAttributeName<'db> {
+pub(in crate::types) struct ImplicitAttributeName<'db> {
     #[returns(copy)]
     class_body_scope: ScopeId<'db>,
     #[returns(ref)]
@@ -361,6 +364,23 @@ struct ImplicitAttributeName<'db> {
 
 // The Salsa heap is tracked separately.
 impl get_size2::GetSize for ImplicitAttributeName<'_> {}
+
+impl<'db> ImplicitAttributeName<'db> {
+    /// The program and scope in which this attribute is inferred.
+    pub(in crate::types) fn environment(self, db: &'db dyn Db) -> ProgramEnvironment<'db> {
+        ProgramEnvironment::from_scope(self.class_body_scope(db))
+    }
+
+    /// Read the attribute's stored type before replacing it with an equation reference.
+    pub(in crate::types) fn equation(self, db: &'db dyn Db) -> Type<'db> {
+        StaticClassLiteral::implicit_attribute_inner(db, self)
+            .member
+            .inner
+            .place
+            .ignore_possibly_undefined()
+            .unwrap_or(Type::Never)
+    }
+}
 
 /// Infer the value written by an attribute definition, including unpacked and iteration targets.
 fn implicit_attribute_binding_type<'db>(

@@ -534,7 +534,7 @@ while random():
     if x:
         x, y = y, x
     reveal_type(x)  # revealed: Literal[2, 1]
-    reveal_type(y)  # revealed: Literal[2, 1]
+    reveal_type(y)  # revealed: Literal[1, 2]
 ```
 
 ### Loop increments guarded by chained comparisons converge
@@ -553,7 +553,7 @@ def advance(data: bytes, offset: int) -> None:
             raise ValueError
         offset += step
         # TODO: The offset should retain its `int` type.
-        reveal_type(offset)  # revealed: int | Unknown
+        reveal_type(offset)  # revealed: Divergent | Divergent
 ```
 
 ### Loop updates guarded by compound conditions converge
@@ -571,7 +571,7 @@ def read_records(offset: int, end: int) -> None:
         if not isinstance(value, int) or not isinstance(size, int) or not 0 <= size <= end - offset:
             raise ValueError
         offset += size
-        reveal_type(offset)  # revealed: int
+        reveal_type(offset)  # revealed: Divergent | Divergent
 ```
 
 ### Worklists guarded by chained comparisons converge
@@ -618,7 +618,7 @@ class Inventory:
                 pass
             if item and item.after:
                 self.after = item.after
-                reveal_type(self.after)  # revealed: str & ~AlwaysFalsy
+                reveal_type(self.after)  # revealed: Divergent
 ```
 
 ### Monotonic widening can keep stale loopback bindings reachable

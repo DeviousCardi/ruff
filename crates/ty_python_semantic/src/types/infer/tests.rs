@@ -543,6 +543,7 @@ fn comparison_truthiness_widens_across_sparse_cycle_results() -> anyhow::Result<
     let scope = global_scope(&db, file);
     let env = ProgramEnvironment::from_scope(scope);
     let inference = |ty, truthiness: Option<Truthiness>| ExpressionInference {
+        query: None,
         expressions: [(expression, ty)].into_iter().collect(),
         extra: truthiness.map(|truthiness| {
             Box::new(ExpressionInferenceExtra {
