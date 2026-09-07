@@ -18,8 +18,8 @@ use crate::types::infer::{InferExpression, infer_definition_types, infer_express
 use crate::types::typevar::TypeVarSet;
 use crate::types::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
 use crate::types::{
-    ApplyTypeMappingVisitor, BoundTypeVarInstance, DivergentType, DynamicType, Type, TypeContext,
-    TypeMapping, TypeVarVariance, any_over_type,
+    ApplyTypeMappingVisitor, BoundTypeVarInstance, DivergentType, DynamicType, MemberInference,
+    Type, TypeContext, TypeMapping, TypeVarVariance, any_over_type,
 };
 use crate::{Db, FxIndexMap, Program, ProgramEnvironment, TAINTED_CYCLES};
 
@@ -40,6 +40,7 @@ pub(in crate::types) enum InferenceQuery<'db> {
     Binding(Definition<'db>),
     Expression(InferExpression<'db>),
     Attribute(ImplicitAttributeName<'db>),
+    Member(MemberInference<'db>),
 }
 
 impl get_size2::GetSize for InferenceKey<'_> {}
@@ -80,6 +81,7 @@ impl<'db> InferenceSource<'db> {
                 ProgramEnvironment::from_scope(input.into_inner(db).0.scope(db))
             }
             InferenceQuery::Attribute(attribute) => attribute.environment(db),
+            InferenceQuery::Member(member) => member.environment(db),
         }
     }
 
@@ -91,6 +93,7 @@ impl<'db> InferenceSource<'db> {
             InferenceQuery::Expression(input) => infer_expression_types_impl(db, input)
                 .raw_expression_type(input.into_inner(db).0.node_ref(db)),
             InferenceQuery::Attribute(attribute) => attribute.equation(db),
+            InferenceQuery::Member(member) => member.equation(db),
         }
     }
 }
@@ -128,6 +131,7 @@ impl<'db> InferenceKey<'db> {
             InferenceQuery::Binding(definition) => definition.as_id(),
             InferenceQuery::Expression(input) => input.as_id(),
             InferenceQuery::Attribute(attribute) => attribute.as_id(),
+            InferenceQuery::Member(member) => member.as_id(),
         };
         Type::Divergent(DivergentType::from_inference(id))
     }
@@ -220,36 +224,33 @@ impl<'db> InferenceKey<'db> {
             }
             _ => None,
         };
+        let result = result.filter(|ty| {
+            !any_over_type(
+                db,
+                &env,
+                *ty,
+                false,
+                |ty| matches!(ty, Type::TypeVar(variable) if variables.contains(&variable)),
+            ) && !RecursiveInputs::contains(db, &env, [*ty])
+        });
+        // Remove Boolean backedges while query identities are still distinct. Otherwise
+        // approximating X = T | Y can erase Y even when its equation contains a constructor.
+        TypeVarSolution::normalize_equations(db, &env, &mut symbolic);
+        let replacements: Vec<_> = replacements
+            .into_iter()
+            .map(|(reference, variable)| (variable, result.map_or(self.fallback(), |_| reference)))
+            .collect();
+        // Structural substitution avoids solving the reinserted query references.
+        let mapping = TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
+            &replacements,
+        )));
+        let unfolded =
+            symbolic[0]
+                .solution
+                .apply_type_mapping(db, &env, &mapping, TypeContext::default());
         match result {
-            Some(ty)
-                if !any_over_type(
-                    db,
-                    &env,
-                    ty,
-                    false,
-                    |ty| matches!(ty, Type::TypeVar(variable) if variables.contains(&variable)),
-                ) && !RecursiveInputs::contains(db, &env, [ty]) =>
-            {
-                // Preserve query identities below constructors, but do not restore Boolean
-                // cycles that solving removed (for example, X = X | set[Never]).
-                TypeVarSolution::normalize_equations(db, &env, &mut symbolic);
-                let replacements: Vec<_> = replacements
-                    .into_iter()
-                    .map(|(reference, variable)| (variable, reference))
-                    .collect();
-                // Structural substitution avoids solving the reinserted query references.
-                let mapping = TypeMapping::Recursive(RecursiveMapping(
-                    RecursiveSubstitution::Replace(&replacements),
-                ));
-                let unfolded = symbolic[0].solution.apply_type_mapping(
-                    db,
-                    &env,
-                    &mapping,
-                    TypeContext::default(),
-                );
-                InferenceSolution { ty, unfolded }
-            }
-            _ => self.approximate_equation(db, root),
+            Some(ty) => InferenceSolution { ty, unfolded },
+            None => self.approximate_equation(db, unfolded),
         }
     }
 }

@@ -1982,7 +1982,7 @@ def grow(n: int):
     value = (0,)
     for _ in range(n):
         value = (*value, value)
-    reveal_type(value)  # revealed: tuple[Literal[0]] | tuple[*tuple[Divergent, ...], Divergent]
+    reveal_type(value)  # revealed: tuple[*tuple[Divergent, ...], Divergent] | tuple[Literal[0]]
 ```
 
 ### Mutually growing tuple expansions
@@ -2000,7 +2000,7 @@ def grow(n: int):
         left = (*right, left)
         right = (*previous, 1)
     reveal_type(len(left))  # revealed: int
-    # revealed: tuple[Literal["begin"]] | tuple[*tuple[letrec a0 = Literal["begin", 0, 1] | a1 | tuple[Literal[0]]; a1 = tuple[*tuple[a0, ...], a1 | tuple[Literal[0]]] in a0, ...], Literal[1]]
+    # revealed: tuple[Literal["begin"]] | tuple[*tuple[letrec a0 = a1 | Literal[0, "begin", 1] | tuple[Literal[0]]; a1 = tuple[*tuple[a0, ...], a1 | tuple[Literal[0]]] in a0, ...], Literal[1]]
     reveal_type(right)
     reveal_type(right[-1])  # revealed: Literal["begin", 1]
     if isinstance(left[-1], tuple):

@@ -321,6 +321,10 @@ impl<'db> TupleLengthAnalysis<'db> {
 
     fn equation(&mut self, db: &'db dyn Db, key: InferenceSource<'db>) -> usize {
         match key.0 {
+            InferenceQuery::Member(member) => {
+                let ty = member.equation(db);
+                self.type_length(db, ty)
+            }
             InferenceQuery::Expression(input) => {
                 let expression = input.into_inner(db).0;
                 let module = parsed_module(db, expression.python_file(db)).load(db);
