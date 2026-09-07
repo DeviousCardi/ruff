@@ -33,6 +33,50 @@ class Cyclic:
 reveal_type(Cyclic("").data)
 ```
 
+## Promoting recursive values stored in attributes
+
+A local variable keeps its literal types as it is repeatedly nested in tuples. Storing the value in
+an attribute promotes the literals throughout the recursive type, so the attribute can hold other
+values of those same types.
+
+```py
+class Tree:
+    def __init__(self, count: int):
+        value = 0
+        for _ in range(count):
+            value = (value, 1)
+        # revealed: (μa0. tuple[Literal[0] | a0, Literal[1]]) | Literal[0]
+        reveal_type(value)
+        self.value = value
+
+reveal_type(Tree(1).value)  # revealed: μa0. tuple[a0, int] | int
+
+def inspect(tree: Tree):
+    value = tree.value
+    if isinstance(value, tuple):
+        reveal_type(value[0])  # revealed: int | (μa0. tuple[a0 | int, int])
+        reveal_type(value[1])  # revealed: int
+        wrong: str = value[0]  # error: [invalid-assignment]
+```
+
+## Promoting class literals in recursive attributes
+
+Class objects nested in a recursive tuple are promoted to subclass types when stored in an
+attribute, while the recursive tuple structure is preserved.
+
+```py
+class Token: ...
+
+class Classes:
+    def __init__(self, count: int):
+        value = Token
+        for _ in range(count):
+            value = (value, Token)
+        self.value = value
+
+reveal_type(Classes(1).value)  # revealed: μa0. tuple[a0, type[Token]] | type[Token]
+```
+
 ## Copying tuple attributes
 
 Copying tuple attributes preserves their lengths, including when two attributes are copied into each

@@ -6,9 +6,10 @@
 
 mod graph;
 mod inference;
+mod operations;
 mod tuple_length;
 
-pub(super) use inference::{InferenceKey, InferenceQuery, RecursiveInputs};
+pub(super) use inference::{InferenceKey, InferenceQuery, InferenceSource, RecursiveInputs};
 pub(super) use tuple_length::TupleLengthAnalysis;
 
 use std::cell::{Cell, RefCell};
@@ -18,13 +19,14 @@ use ty_python_core::definition::Definition;
 use ty_python_core::place_table;
 
 use self::graph::RecursiveGraphBuilder;
+use self::operations::RecursiveOperations;
 use super::generics::{ApplySpecialization, Specialization, walk_specialization_types};
 use super::variance::{VarianceInferable, VarianceOrigin};
 use super::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
 use super::{
-    ApplyTypeMappingVisitor, BoundTypeVarIdentity, BoundTypeVarInstance, GenericContext,
-    MaterializationKind, Type, TypeAliasType, TypeContext, TypeMapping, VarianceTerm,
-    any_over_type,
+    ApplyTypeMappingVisitor, BoundTypeVarIdentity, BoundTypeVarInstance, DivergentType,
+    GenericContext, MaterializationKind, Type, TypeAliasType, TypeContext, TypeMapping,
+    VarianceTerm, any_over_type,
 };
 use crate::{Db, FxIndexMap, Program, ProgramEnvironment};
 
@@ -135,6 +137,50 @@ impl<'db> RecursiveMapping<'_, 'db> {
         )
     }
 
+    /// Merged Salsa cycles share one marker, including its materialized bounds.
+    /// Otherwise earlier heads can leave duplicate fallback types in the merged cycle.
+    pub(super) fn unify_cycle_heads(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        ty: Type<'db>,
+        cycle: &salsa::Cycle,
+    ) -> Type<'db> {
+        let replacements: Vec<_> = cycle
+            .head_ids()
+            .filter(|id| *id != cycle.id())
+            .flat_map(|id| {
+                [
+                    None,
+                    Some(MaterializationKind::Top),
+                    Some(MaterializationKind::Bottom),
+                ]
+                .map(|materialization| {
+                    (
+                        Type::Divergent(DivergentType {
+                            materialization,
+                            ..DivergentType::new(id)
+                        }),
+                        Type::Divergent(DivergentType {
+                            materialization,
+                            ..DivergentType::new(cycle.id())
+                        }),
+                    )
+                })
+            })
+            .collect();
+        if replacements.is_empty() {
+            return ty;
+        }
+        ty.apply_type_mapping(
+            db,
+            env,
+            &TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
+                &replacements,
+            ))),
+            TypeContext::default(),
+        )
+    }
+
     /// Substitute equation references or extract closed children as graph edges.
     /// Replacements must contain no unbound `RecursiveVar`; alias bodies retain their own binder.
     pub(super) fn map_type(
@@ -169,7 +215,7 @@ pub enum RecursiveOrigin<'db> {
     /// A closed solution of recursive type constraints, independent of any query cycle.
     ConstraintSolution(Program<'db>),
     /// A closed reference to a query equation; its identity excludes provisional solutions.
-    Inference(InferenceKey<'db>),
+    Inference(InferenceSource<'db>),
     /// A query's unresolved initial binder. It is replaced by a query reference at read boundaries.
     InferenceCycle {
         program: Program<'db>,
@@ -206,6 +252,9 @@ pub struct RecursiveType<'db> {
     /// The lazy materialization applied to this recursive alias, if any.
     #[returns(copy)]
     pub(super) materialization_kind: Option<MaterializationKind>,
+    /// Deferred operations on the closed query reference, outside its recursive binder.
+    #[returns(copy)]
+    operations: Option<RecursiveOperations<'db>>,
 }
 
 impl get_size2::GetSize for RecursiveType<'_> {}
@@ -231,6 +280,7 @@ impl<'db> RecursiveType<'db> {
             ),
             0,
             arguments,
+            None,
             None,
         ))
     }
@@ -258,6 +308,7 @@ impl<'db> RecursiveType<'db> {
             0,
             None,
             None,
+            None,
         ))
     }
 
@@ -265,7 +316,7 @@ impl<'db> RecursiveType<'db> {
     fn inference(db: &'db dyn Db, key: InferenceKey<'db>) -> Self {
         Self::new_internal(
             db,
-            RecursiveOrigin::Inference(key),
+            RecursiveOrigin::Inference(key.source),
             RecursiveGraph::new_internal(
                 db,
                 vec![Type::RecursiveVar(RecursiveVar::new_internal(
@@ -276,12 +327,16 @@ impl<'db> RecursiveType<'db> {
             0,
             None,
             None,
+            key.operations,
         )
     }
 
     pub(super) fn inference_key(self, db: &'db dyn Db) -> Option<InferenceKey<'db>> {
         match self.origin(db) {
-            RecursiveOrigin::Inference(key) => Some(key),
+            RecursiveOrigin::Inference(source) => Some(InferenceKey {
+                source,
+                operations: self.operations(db),
+            }),
             _ => None,
         }
     }
@@ -319,6 +374,7 @@ impl<'db> RecursiveType<'db> {
             entry,
             arguments,
             self.materialization_kind(db),
+            self.operations(db),
         ))
     }
 
@@ -352,6 +408,7 @@ impl<'db> RecursiveType<'db> {
             && self.graph(db) == other.graph(db)
             && self.arguments(db) == other.arguments(db)
             && self.materialization_kind(db) == other.materialization_kind(db)
+            && self.operations(db) == other.operations(db)
     }
 
     /// Close recursive occurrences after inferring an alias's constructor expression.
@@ -398,6 +455,7 @@ impl<'db> RecursiveType<'db> {
             0,
             self.arguments(db),
             None,
+            None,
         ))
     }
 
@@ -427,6 +485,7 @@ impl<'db> RecursiveType<'db> {
             self.entry(db),
             arguments,
             self.materialization_kind(db),
+            self.operations(db),
         )
     }
 
@@ -442,6 +501,7 @@ impl<'db> RecursiveType<'db> {
             self.entry(db),
             self.arguments(db),
             materialization,
+            self.operations(db),
         )
     }
 
@@ -548,7 +608,8 @@ impl<'db> RecursiveType<'db> {
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Bind(target)))
                 if self.origin(db) == target.origin(db)
                     && self.graph(db) == target.graph(db)
-                    && self.materialization_kind(db) == target.materialization_kind(db) =>
+                    && self.materialization_kind(db) == target.materialization_kind(db)
+                    && self.operations(db) == target.operations(db) =>
             {
                 let arguments = self
                     .arguments(db)
@@ -578,7 +639,11 @@ impl<'db> RecursiveType<'db> {
                     self.entry(db),
                     arguments,
                     self.materialization_kind(db),
+                    self.operations(db),
                 ))
+            }
+            TypeMapping::Promote(mode, kind) if self.inference_key(db).is_some() => {
+                Type::Recursive(self.with_promotion(db, *mode, *kind))
             }
             // Until mappings can retain an equation's input, use the ordinary cycle
             // approximation instead of repeatedly specializing provisional solutions.
@@ -606,6 +671,7 @@ impl<'db> RecursiveType<'db> {
                 self.graph(db) == root.graph(db)
                     && self.origin(db) == root.origin(db)
                     && self.materialization_kind(db) == root.materialization_kind(db)
+                    && self.operations(db) == root.operations(db)
             }) =>
             {
                 Type::Recursive(self)
@@ -622,6 +688,7 @@ impl<'db> RecursiveType<'db> {
                             entry,
                             self.arguments(db),
                             self.materialization_kind(db),
+                            self.operations(db),
                         );
                         let mapped = root.map_type(db, visitor.env, |unfolded| {
                             unfolded.apply_type_mapping_impl(db, mapping, tcx, &nested)
