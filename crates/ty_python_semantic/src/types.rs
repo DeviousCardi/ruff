@@ -2271,14 +2271,19 @@ impl<'db> Type<'db> {
         previous: Self,
         cycle: &salsa::Cycle,
     ) -> Self {
+        // Stable equations retain their references even when another query needs more iterations.
+        if recursive::RecursiveInputs::contains(db, env, [self, previous])
+            && (self == previous || cycle.iteration() <= crate::TAINTED_CYCLES)
+        {
+            return self;
+        }
         let (current, previous) = if cycle.iteration() > crate::TAINTED_CYCLES {
-            let divergent = Type::divergent(cycle.id());
+            // An inner cycle can disappear while an enclosing cycle still needs to converge.
+            let divergent = Type::Divergent(DivergentType::from_inference(cycle.id()));
             (
                 recursive::RecursiveMapping::approximate_inference(db, env, self, divergent),
                 recursive::RecursiveMapping::approximate_inference(db, env, previous, divergent),
             )
-        } else if recursive::RecursiveInputs::contains(db, env, [self, previous]) {
-            return self;
         } else {
             (self, previous)
         };
@@ -8875,7 +8880,7 @@ impl<'db> Type<'db> {
         visitor: &ApplyTypeMappingVisitor<'_, 'db>,
     ) -> Type<'db> {
         if let TypeMapping::Recursive(mapping) = type_mapping
-            && let Some(ty) = mapping.extract_type(db, self, visitor)
+            && let Some(ty) = mapping.map_type(db, self, visitor)
         {
             return ty;
         }

@@ -7,11 +7,11 @@ use ruff_python_ast::name::Name;
 use salsa::plumbing::AsId;
 use ty_python_core::definition::Definition;
 
-use super::{
-    RecursiveMapping, RecursiveOrigin, RecursiveSubstitution, RecursiveType, TupleLengthAnalysis,
-};
+use super::{RecursiveMapping, RecursiveOrigin, RecursiveSubstitution, RecursiveType};
 use crate::types::class::ImplicitAttributeName;
-use crate::types::constraints::{ConstraintSet, ConstraintSetBuilder, SolutionPaths, Solutions};
+use crate::types::constraints::{
+    ConstraintSet, ConstraintSetBuilder, SolutionPaths, Solutions, TypeVarSolution,
+};
 use crate::types::generics::walk_specialization_types;
 use crate::types::infer::{InferExpression, infer_definition_types, infer_expression_types_impl};
 use crate::types::typevar::TypeVarSet;
@@ -43,6 +43,22 @@ impl<'db> InferenceQuery<'db> {
     }
 }
 
+/// A closed solution for display and its unfolding with query-owned recursive backedges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, get_size2::GetSize, salsa::SalsaValue)]
+pub(in crate::types) struct InferenceSolution<'db> {
+    /// The closed solver output, used without inserting it into a defining equation.
+    pub(in crate::types) ty: Type<'db>,
+    /// Query references prevent successive unfoldings from embedding previous solutions.
+    pub(in crate::types) unfolded: Type<'db>,
+}
+
+impl<'db> InferenceSolution<'db> {
+    /// Use the cycle approximation directly for display and type operations.
+    fn approximate(ty: Type<'db>) -> Self {
+        Self { ty, unfolded: ty }
+    }
+}
+
 impl<'db> InferenceKey<'db> {
     pub(super) fn environment(self, db: &'db dyn Db) -> ProgramEnvironment<'db> {
         match self.0 {
@@ -61,13 +77,8 @@ impl<'db> InferenceKey<'db> {
     /// Acyclic values remain direct. Recursive reads retain the identity of their defining query.
     fn value(self, db: &'db dyn Db, body: Type<'db>) -> Type<'db> {
         let env = self.environment(db);
-        if !RecursiveInputs::contains(db, &env, [body]) {
-            body
-        } else if TupleLengthAnalysis::is_unbounded(db, env.program(db), self) {
-            // Growing expansions use the ordinary cycle approximation from their
-            // first read, before unfolding can embed provisional recursive solutions.
-            RecursiveMapping::approximate_inference(db, &env, body, self.fallback())
-        } else if matches!(body, Type::Recursive(recursive) if recursive.inference_key(db).is_some())
+        if !RecursiveInputs::contains(db, &env, [body])
+            || matches!(body, Type::Recursive(recursive) if recursive.inference_key(db).is_some())
         {
             body
         } else {
@@ -95,20 +106,21 @@ impl<'db> InferenceKey<'db> {
         Type::Divergent(DivergentType::from_inference(id))
     }
 
-    pub(in crate::types) fn solution(self, db: &'db dyn Db) -> Type<'db> {
+    pub(in crate::types) fn solution(self, db: &'db dyn Db) -> InferenceSolution<'db> {
         inference_solution(db, self.environment(db).program(db), self)
     }
 
     /// Retain the equation's outer constructors while approximating unresolved backedges.
-    fn approximate_equation(self, db: &'db dyn Db, body: Type<'db>) -> Type<'db> {
+    fn approximate_equation(self, db: &'db dyn Db, body: Type<'db>) -> InferenceSolution<'db> {
         let env = self.environment(db);
         let divergent = self.fallback();
-        RecursiveMapping::approximate_inference(db, &env, body, divergent)
+        let ty = RecursiveMapping::approximate_inference(db, &env, body, divergent)
             .recursive_type_normalized_impl(db, &env, divergent, false)
-            .unwrap_or(divergent)
+            .unwrap_or(divergent);
+        InferenceSolution::approximate(ty)
     }
 
-    fn solve(self, db: &'db dyn Db) -> Type<'db> {
+    fn solve(self, db: &'db dyn Db) -> InferenceSolution<'db> {
         let env = self.environment(db);
         let root = self.equation(db);
         let mut equations = FxIndexMap::from_iter([(self, root)]);
@@ -147,7 +159,7 @@ impl<'db> InferenceKey<'db> {
         let replacements: Vec<_> = equations
             .keys()
             .zip(&variables)
-            .map(|(key, variable)| (RecursiveType::inference(db, *key), Type::TypeVar(*variable)))
+            .map(|(key, variable)| (key.reference(db), Type::TypeVar(*variable)))
             .collect();
         let mapping = TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
             &replacements,
@@ -155,8 +167,13 @@ impl<'db> InferenceKey<'db> {
         let visitor = ApplyTypeMappingVisitor::new(&env);
         let builder = ConstraintSetBuilder::new();
         let mut constraints = ConstraintSet::from_bool(&builder, true);
+        let mut symbolic = Vec::with_capacity(equations.len());
         for (body, variable) in equations.values().zip(&variables) {
             let body = body.apply_type_mapping_impl(db, &mapping, TypeContext::default(), &visitor);
+            symbolic.push(TypeVarSolution {
+                bound_typevar: *variable,
+                solution: body,
+            });
             constraints = constraints.and(db, &builder, || {
                 ConstraintSet::constrain_typevar(db, &env, &builder, *variable, body, body)
             });
@@ -186,7 +203,24 @@ impl<'db> InferenceKey<'db> {
                     |ty| matches!(ty, Type::TypeVar(variable) if variables.contains(&variable)),
                 ) && !RecursiveInputs::contains(db, &env, [ty]) =>
             {
-                ty
+                // Preserve query identities below constructors, but do not restore Boolean
+                // cycles that solving removed (for example, X = X | set[Never]).
+                TypeVarSolution::normalize_equations(db, &env, &mut symbolic);
+                let replacements: Vec<_> = replacements
+                    .into_iter()
+                    .map(|(reference, variable)| (variable, reference))
+                    .collect();
+                // Structural substitution avoids solving the reinserted query references.
+                let mapping = TypeMapping::Recursive(RecursiveMapping(
+                    RecursiveSubstitution::Replace(&replacements),
+                ));
+                let unfolded = symbolic[0].solution.apply_type_mapping(
+                    db,
+                    &env,
+                    &mapping,
+                    TypeContext::default(),
+                );
+                InferenceSolution { ty, unfolded }
             }
             _ => self.approximate_equation(db, root),
         }
@@ -196,15 +230,15 @@ impl<'db> InferenceKey<'db> {
 /// Solving may infer signatures and members, so it runs in an ordinary query.
 #[salsa::tracked(
     returns(copy),
-    cycle_initial=|_, id, _, _| Type::divergent(id),
-    cycle_fn=|_, cycle: &salsa::Cycle, _, current, _, _| if cycle.iteration() <= TAINTED_CYCLES { current } else { Type::divergent(cycle.id()) },
+    cycle_initial=|_, id, _, _| InferenceSolution::approximate(Type::divergent(id)),
+    cycle_fn=|_, cycle: &salsa::Cycle, _, current, _, _| if cycle.iteration() <= TAINTED_CYCLES { current } else { InferenceSolution::approximate(Type::divergent(cycle.id())) },
     heap_size=ruff_memory_usage::heap_size,
 )]
 fn inference_solution<'db>(
     db: &'db dyn Db,
     _program: Program<'db>,
     key: InferenceKey<'db>,
-) -> Type<'db> {
+) -> InferenceSolution<'db> {
     key.solve(db)
 }
 

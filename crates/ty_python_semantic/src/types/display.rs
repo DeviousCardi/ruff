@@ -703,12 +703,11 @@ impl<'db> Type<'db> {
         db: &'db dyn Db,
         env: &'env ProgramEnvironment<'db>,
     ) -> DisplayType<'env, 'db> {
-        DisplayType {
-            ty: self,
-            settings: DisplaySettings::from_possibly_ambiguous_types(db, env, [self]),
+        self.display_with(
             db,
             env,
-        }
+            DisplaySettings::from_possibly_ambiguous_types(db, env, [self]),
+        )
     }
 
     pub(crate) fn display_with<'env>(
@@ -717,9 +716,16 @@ impl<'db> Type<'db> {
         env: &'env ProgramEnvironment<'db>,
         settings: DisplaySettings<'db>,
     ) -> DisplayType<'env, 'db> {
+        // Resolve query references before deciding which syntax needs parentheses.
+        let ty = match self {
+            Type::Recursive(recursive) if let Some(key) = recursive.inference_key(db) => {
+                key.solution(db).ty
+            }
+            ty => ty,
+        };
         // Unnamed entries in an already displayed graph expand inline. Resolve
         // them before deciding whether the displayed expression needs parentheses.
-        let ty = if let Type::Recursive(recursive) = self
+        let ty = if let Type::Recursive(recursive) = ty
             && !settings.recursive_binders.contains(&recursive)
             && settings
                 .recursive_binders
@@ -728,7 +734,7 @@ impl<'db> Type<'db> {
         {
             recursive.unfold(db, env)
         } else {
-            self
+            ty
         };
         DisplayType {
             ty,
@@ -1701,14 +1707,6 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                 )
             }
             Type::Recursive(recursive) => {
-                if let Some(key) = recursive.inference_key(db) {
-                    let solution = key.solution(db);
-                    if solution != self.ty {
-                        return solution
-                            .display_with(db, self.env, self.settings.clone())
-                            .fmt_detailed(f);
-                    }
-                }
                 if let Some(index) = self
                     .settings
                     .recursive_binders

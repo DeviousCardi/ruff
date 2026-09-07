@@ -112,7 +112,7 @@ pub struct RecursiveMapping<'a, 'db>(RecursiveSubstitution<'a, 'db>);
 enum RecursiveSubstitution<'a, 'db> {
     Unfold(RecursiveType<'db>),
     Bind(RecursiveType<'db>),
-    Replace(&'a [(RecursiveType<'db>, Type<'db>)]),
+    Replace(&'a [(Type<'db>, Type<'db>)]),
     Approximate(Type<'db>),
     Reindex(&'a [usize]),
     Rebuild(&'a [Type<'db>]),
@@ -135,21 +135,27 @@ impl<'db> RecursiveMapping<'_, 'db> {
         )
     }
 
-    /// Extract closed children as graph edges. Bodies of named aliases keep their
-    /// own binder; only the arguments outside that binder belong to this graph.
-    pub(super) fn extract_type(
+    /// Substitute equation references or extract closed children as graph edges.
+    /// Replacements must contain no unbound `RecursiveVar`; alias bodies retain their own binder.
+    pub(super) fn map_type(
         self,
         db: &'db dyn Db,
         ty: Type<'db>,
         visitor: &ApplyTypeMappingVisitor<'_, 'db>,
     ) -> Option<Type<'db>> {
-        let RecursiveSubstitution::Extract(builder) = self.0 else {
-            return None;
-        };
-        if visitor.recursive_depth != 0 || matches!(ty, Type::RecursiveVar(_)) {
-            return Some(ty);
+        match self.0 {
+            RecursiveSubstitution::Replace(replacements) => replacements
+                .iter()
+                .find_map(|(target, replacement)| (ty == *target).then_some(*replacement)),
+            RecursiveSubstitution::Extract(builder) => {
+                if visitor.recursive_depth != 0 || matches!(ty, Type::RecursiveVar(_)) {
+                    Some(ty)
+                } else {
+                    Some(builder.reference(db, ty))
+                }
+            }
+            _ => None,
         }
-        Some(builder.reference(db, ty))
     }
 }
 
@@ -486,11 +492,7 @@ impl<'db> RecursiveType<'db> {
     /// bodies increase the depth used to identify references to this binder.
     pub fn unfold(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>) -> Type<'db> {
         if let Some(key) = self.inference_key(db) {
-            let solution = key.solution(db);
-            return match solution {
-                Type::Recursive(recursive) => recursive.unfold(db, env),
-                other => other,
-            };
+            return key.solution(db).unfolded;
         }
         Type::Recursive(self).assert_no_unbound_recursive_vars(db, env);
         let unfolded = self.body(db).apply_type_mapping_impl(
@@ -542,13 +544,6 @@ impl<'db> RecursiveType<'db> {
                 let visitor = ApplyTypeMappingVisitor::new(visitor.env);
                 self.body(db)
                     .apply_type_mapping_impl(db, mapping, tcx, &visitor)
-            }
-            TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
-                replacements,
-            ))) if let Some((_, replacement)) =
-                replacements.iter().find(|(target, _)| self == *target) =>
-            {
-                *replacement
             }
             TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Bind(target)))
                 if self.origin(db) == target.origin(db)

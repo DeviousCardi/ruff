@@ -1968,7 +1968,7 @@ def nest(initial: Any, n: int):
     value = initial
     for _ in range(n):
         value = (value,)
-    reveal_type(value)  # revealed: (tuple[Divergent]) | Any
+    reveal_type(value)  # revealed: tuple[Divergent] | Any
 ```
 
 ### Unpacking recursively built tuples
@@ -1988,7 +1988,8 @@ def grow(n: int):
 ### Mutually growing tuple expansions
 
 Each tuple copies the previous contents of the other and adds an element. Their lengths are
-unbounded, but the last element of `right` remains `1` whenever the loop executes.
+unbounded, but their elements retain the recursive tuple structure. The last element of `right`
+remains `1` whenever the loop executes; the last element of `left` can itself be a tuple.
 
 ```py
 def grow(n: int):
@@ -1999,9 +2000,32 @@ def grow(n: int):
         left = (*right, left)
         right = (*previous, 1)
     reveal_type(len(left))  # revealed: int
-    # revealed: tuple[Literal["begin"]] | tuple[*tuple[Literal[0] | Divergent, ...], Literal[1]]
+    # revealed: tuple[Literal["begin"]] | tuple[*tuple[letrec a0 = Literal["begin", 0, 1] | a1 | tuple[Literal[0]]; a1 = tuple[*tuple[a0, ...], a1 | tuple[Literal[0]]] in a0, ...], Literal[1]]
     reveal_type(right)
     reveal_type(right[-1])  # revealed: Literal["begin", 1]
+    if isinstance(left[-1], tuple):
+        # error: [invalid-assignment]
+        leaf: int | str = left[-1][-1]
+```
+
+### Conditional mutually growing tuples
+
+A branch can leave a tuple unchanged while another branch extends it. The copied contents have
+unbounded length, while the final element added to `right` remains known.
+
+```py
+def grow(n: int, extend: bool):
+    left = (0,)
+    right = ("start",)
+    for _ in range(n):
+        previous = left
+        if extend:
+            left = (*right, left)
+        else:
+            left = left
+        right = (*previous, 1)
+    reveal_type(len(left))  # revealed: int
+    reveal_type(right[-1])  # revealed: Literal["start", 1]
 ```
 
 ### Mutually recursive loop bindings

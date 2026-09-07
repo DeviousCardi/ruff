@@ -1478,7 +1478,7 @@ def ordering[T, U, A, B, C, D]():
     constraints = ConstraintSet.equality(T, tuple[Intersection[U, A, B, Not[C], Not[D]]]) & ConstraintSet.equality(
         U, tuple[Intersection[T, B, A, Not[D], Not[C]]]
     )
-    # revealed: tuple[Solution[T=μa0. tuple[a0 & A@ordering & B@ordering & ~C@ordering & ~D@ordering], U=μa0. tuple[a0 & A@ordering & B@ordering & ~C@ordering & ~D@ordering]]]
+    # revealed: tuple[Solution[T=μa0. tuple[a0 & A@ordering & B@ordering & ~D@ordering & ~C@ordering], U=μa0. tuple[a0 & A@ordering & B@ordering & ~D@ordering & ~C@ordering]]]
     reveal_type(constraints.solutions(inferable=tuple[T, U]))
 ```
 

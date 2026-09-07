@@ -134,8 +134,27 @@ impl<'db> TypeVarSolution<'db> {
         solution: &mut [Self],
     ) -> bool {
         let mut equations = solution.to_vec();
-        // Boolean dependencies can simplify away (for example, int & (int | T)).
-        // Eliminate them before binding, without expanding references under constructors.
+        Self::normalize_equations(db, env, &mut equations);
+        let equations: Vec<_> = equations
+            .iter()
+            .map(|binding| (binding.bound_typevar, binding.solution))
+            .collect();
+        let Some(types) = RecursiveType::from_equations(db, env, &equations) else {
+            return false;
+        };
+        for (binding, ty) in solution.iter_mut().zip(types) {
+            binding.solution = ty;
+        }
+        true
+    }
+
+    /// Eliminate Boolean cycles without substituting references below constructors.
+    /// The normalized equations can be closed as recursive types or unfolded symbolically.
+    pub(in crate::types) fn normalize_equations(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        equations: &mut [Self],
+    ) {
         for index in 0..equations.len() {
             let variable = equations[index].bound_typevar;
             let equation = equations[index].without_self_constraint(db, env);
@@ -147,22 +166,9 @@ impl<'db> TypeVarSolution<'db> {
                 }
             }
         }
-        let equations: Vec<_> = equations
-            .iter()
-            .map(|binding| {
-                (
-                    binding.bound_typevar,
-                    binding.without_self_constraint(db, env),
-                )
-            })
-            .collect();
-        let Some(types) = RecursiveType::from_equations(db, env, &equations) else {
-            return false;
-        };
-        for (binding, ty) in solution.iter_mut().zip(types) {
-            binding.solution = ty;
+        for binding in equations {
+            binding.solution = binding.without_self_constraint(db, env);
         }
-        true
     }
 
     /// Substitute within Boolean expressions; constructor edges stay shared.

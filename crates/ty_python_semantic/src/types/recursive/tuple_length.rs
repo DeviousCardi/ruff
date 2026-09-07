@@ -26,7 +26,7 @@ use crate::types::infer::{
 use crate::types::tuple::{TupleLength, TupleSpec, TupleType};
 use crate::types::unpacker::unpacked_assignment_value;
 use crate::types::{Type, TypeContext, UnionType};
-use crate::{Db, FxIndexMap, Program, ProgramEnvironment};
+use crate::{Db, FxIndexMap, ProgramEnvironment};
 
 /// A finite system of nonnegative sums and maxima, before unpacking erases its dependencies.
 #[derive(Default)]
@@ -58,7 +58,6 @@ impl LengthNode {
     }
 }
 
-#[salsa::tracked]
 impl<'db> TupleLengthAnalysis<'db> {
     /// Preserve each possible finite length, or widen an unbounded expansion while retaining its ends.
     pub(in crate::types) fn normalize(
@@ -105,22 +104,6 @@ impl<'db> TupleLengthAnalysis<'db> {
             }
             LengthBounds::Unknown => Type::tuple(TupleType::new(db, env, &spec)),
         }
-    }
-
-    /// Whether the defining constructors generate arbitrarily long tuples.
-    /// Member lookup can request this same analysis; its initial value claims no proof of growth.
-    #[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| false, heap_size=ruff_memory_usage::heap_size)]
-    pub(super) fn is_unbounded(
-        db: &'db dyn Db,
-        program: Program<'db>,
-        key: InferenceKey<'db>,
-    ) -> bool {
-        // The program supplies the identity required by Salsa for the first query key.
-        let _ = program;
-        let mut analysis = Self::default();
-        let root = analysis.input(key);
-        analysis.collect(db);
-        matches!(analysis.bounds()[root], LengthBounds::Unbounded)
     }
 
     fn collect(&mut self, db: &'db dyn Db) {
