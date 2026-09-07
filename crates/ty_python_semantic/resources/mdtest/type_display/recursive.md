@@ -37,7 +37,7 @@ def show(n: int):
             reveal_type(array)  # revealed: list[μa0. tuple[Literal[0] | a0]]
             reveal_type(pair)  # revealed: tuple[μa0. tuple[Literal[0] | a0], μa0. tuple[Literal[0] | a0]]
             reveal_type(union)  # revealed: int | (μa0. tuple[Literal[0] | a0])
-            reveal_type(intersection)  # revealed: tuple[(μa0. tuple[Literal[0] | a0]) | Literal[0]] & T@contexts
+            reveal_type(intersection)  # revealed: (μa0. tuple[Literal[0] | a0]) & T@contexts
             reveal_type(complement)  # revealed: ~(μa0. tuple[Literal[0] | a0])
             reveal_type(callback)  # revealed: (μa0. tuple[Literal[0] | a0], /) -> μa0. tuple[Literal[0] | a0]
 ```

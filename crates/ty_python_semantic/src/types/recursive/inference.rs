@@ -10,12 +10,9 @@ use ty_python_core::definition::Definition;
 use super::operations::RecursiveOperations;
 use super::{RecursiveMapping, RecursiveOrigin, RecursiveSubstitution, RecursiveType};
 use crate::types::class::ImplicitAttributeName;
-use crate::types::constraints::{
-    ConstraintSet, ConstraintSetBuilder, SolutionPaths, Solutions, TypeVarSolution,
-};
+use crate::types::constraints::{SolutionPaths, Solutions, TypeVarSolution};
 use crate::types::generics::walk_specialization_types;
 use crate::types::infer::{InferExpression, infer_definition_types, infer_expression_types_impl};
-use crate::types::typevar::TypeVarSet;
 use crate::types::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
 use crate::types::{
     ApplyTypeMappingVisitor, BoundTypeVarInstance, DivergentType, DynamicType, MemberInference,
@@ -196,8 +193,6 @@ impl<'db> InferenceKey<'db> {
             &replacements,
         )));
         let visitor = ApplyTypeMappingVisitor::new(&env);
-        let builder = ConstraintSetBuilder::new();
-        let mut constraints = ConstraintSet::from_bool(&builder, true);
         let mut symbolic = Vec::with_capacity(equations.len());
         for (body, variable) in equations.values().zip(&variables) {
             let body = body.apply_type_mapping_impl(db, &mapping, TypeContext::default(), &visitor);
@@ -205,15 +200,8 @@ impl<'db> InferenceKey<'db> {
                 bound_typevar: *variable,
                 solution: body,
             });
-            constraints = constraints.and(db, &builder, || {
-                ConstraintSet::constrain_typevar(db, &env, &builder, *variable, body, body)
-            });
         }
-        let result = match &constraints.solutions(
-            db,
-            &env,
-            TypeVarSet::from_typevars(db, variables.iter().copied()),
-        ) {
+        let result = match &TypeVarSolution::solve_equations(db, &env, &symbolic) {
             Ok(Solutions::Constrained(SolutionPaths::Complete(paths)))
                 if let [solution] = paths.as_slice() =>
             {

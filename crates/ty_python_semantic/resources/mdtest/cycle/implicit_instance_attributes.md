@@ -302,8 +302,8 @@ class Branches:
         self.a = (other.a, other.b)
         self.b = (other.a,)
 
-reveal_type(Branches().a)  # revealed: μa0. tuple[a0, str | tuple[a0]] | int
-reveal_type(Branches().b)  # revealed: μ{a0; a1 = tuple[a1, a0] | int}. str | tuple[a1]
+reveal_type(Branches().a)  # revealed: μa0. tuple[a0, tuple[a0] | str] | int
+reveal_type(Branches().b)  # revealed: μ{a0; a1 = tuple[a1, a0] | int}. tuple[a1] | str
 
 type A = int | tuple[A, B]
 type B = str | tuple[A]
