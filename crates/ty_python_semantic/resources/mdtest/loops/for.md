@@ -1828,8 +1828,8 @@ def nest(n: int):
 
 ### Recursive tuples with a dynamic initial value
 
-When the initial value is `Any`, we approximate the recursive part with `Divergent` instead of
-solving a recursive equation containing dynamic types.
+When the initial value is `Any`, tuple wrapping remains visible. The recursively nested element is
+approximated with `Divergent`, and `Any` remains possible when the loop does not run.
 
 ```py
 from typing import Any
@@ -1838,20 +1838,21 @@ def nest(initial: Any, n: int):
     value = initial
     for _ in range(n):
         value = (value,)
-    reveal_type(value)  # revealed: (Divergent) | Any
+    reveal_type(value)  # revealed: (tuple[Divergent]) | Any
 ```
 
 ### Unpacking recursively built tuples
 
-A tuple can grow in both length and nesting. We approximate the unresolved recursive part with
-`Divergent`; the initial one-element tuple remains possible when the loop does not run.
+A tuple can grow in both length and nesting. Its unpacked prefix has variable length, and its final
+element is the previous tuple. Both recursive parts are approximated with `Divergent`; the initial
+one-element tuple remains possible when the loop does not run.
 
 ```py
 def grow(n: int):
     value = (0,)
     for _ in range(n):
         value = (*value, value)
-    reveal_type(value)  # revealed: tuple[Literal[0]] | (Divergent)
+    reveal_type(value)  # revealed: tuple[Literal[0]] | (tuple[*tuple[Divergent, ...], Divergent])
 ```
 
 ### Mutually recursive loop bindings
@@ -1867,7 +1868,7 @@ def build(n: int):
         previous = left
         left = (right, 1)
         right = (previous, "end")
-    # revealed: (tuple[(μa0. tuple[(tuple[(a0 | Literal["start"]) | Literal[1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start", 1], ...]) | Literal[1]
+    # revealed: (tuple[(μa0. tuple[Literal["end"] | (tuple[(a0 | Literal["start"]) | Literal[1], ...] | Literal[1]), ...]) | Literal["start", 1], ...]) | Literal[1]
     reveal_type(left)
     # revealed: (μa0. tuple[(tuple[a0 | Literal["start", 1], ...] | Literal[1]) | Literal["end"], ...]) | Literal["start"]
     reveal_type(right)

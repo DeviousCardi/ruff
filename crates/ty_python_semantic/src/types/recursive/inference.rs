@@ -91,9 +91,19 @@ impl<'db> InferenceKey<'db> {
         inference_solution(db, self.environment(db).program(db), self)
     }
 
+    /// Retain the equation's outer constructors while approximating unresolved backedges.
+    fn approximate_equation(self, db: &'db dyn Db, body: Type<'db>) -> Type<'db> {
+        let env = self.environment(db);
+        let divergent = self.fallback();
+        RecursiveMapping::approximate_inference(db, &env, body, divergent)
+            .recursive_type_normalized_impl(db, &env, divergent, false)
+            .unwrap_or(divergent)
+    }
+
     fn solve(self, db: &'db dyn Db) -> Type<'db> {
         let env = self.environment(db);
-        let mut equations = FxIndexMap::from_iter([(self, self.equation(db))]);
+        let root = self.equation(db);
+        let mut equations = FxIndexMap::from_iter([(self, root)]);
         let mut cursor = 0;
         while let Some((_, body)) = equations.get_index(cursor) {
             // Gradual recursive equations need a separate bound on materialization.
@@ -101,7 +111,7 @@ impl<'db> InferenceKey<'db> {
             if any_over_type(db, &env, *body, false, |ty| {
                 matches!(ty, Type::Dynamic(_) | Type::Divergent(_))
             }) {
-                return self.fallback();
+                return self.approximate_equation(db, root);
             }
             let inputs = RecursiveInputs::collect(db, &env, [*body]);
             cursor += 1;
@@ -110,7 +120,7 @@ impl<'db> InferenceKey<'db> {
                     // Query inputs can themselves contain inferred types. Bound graph
                     // discovery before those inputs can create an unbounded worklist.
                     if equations.len() >= 32 {
-                        return self.fallback();
+                        return self.approximate_equation(db, root);
                     }
                     equations.insert(key, key.equation(db));
                 }
@@ -176,7 +186,7 @@ impl<'db> InferenceKey<'db> {
             {
                 ty
             }
-            _ => self.fallback(),
+            _ => self.approximate_equation(db, root),
         }
     }
 }
