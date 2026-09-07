@@ -6,7 +6,7 @@
 
 mod graph;
 mod inference;
-mod operations;
+pub(super) mod operations;
 mod tuple_length;
 
 pub(super) use inference::{InferenceKey, InferenceQuery, InferenceSource, RecursiveInputs};
@@ -19,7 +19,7 @@ use ty_python_core::definition::Definition;
 use ty_python_core::place_table;
 
 use self::graph::RecursiveGraphBuilder;
-use self::operations::RecursiveOperations;
+use self::operations::{RecursiveOperation, RecursiveOperations};
 use super::generics::{ApplySpecialization, Specialization, walk_specialization_types};
 use super::variance::{VarianceInferable, VarianceOrigin};
 use super::visitor::{TypeKind, TypeVisitor, walk_non_atomic_type};
@@ -643,7 +643,7 @@ impl<'db> RecursiveType<'db> {
                 ))
             }
             TypeMapping::Promote(mode, kind) if self.inference_key(db).is_some() => {
-                Type::Recursive(self.with_promotion(db, *mode, *kind))
+                Type::Recursive(self.with_operation(db, RecursiveOperation::Promote(*mode, *kind)))
             }
             // Until mappings can retain an equation's input, use the ordinary cycle
             // approximation instead of repeatedly specializing provisional solutions.

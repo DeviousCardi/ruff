@@ -333,6 +333,26 @@ impl<'db> RecursiveInputs<'db> {
         ))
     }
 
+    /// Resolve query references for diagnostics without inserting solutions into equations.
+    pub(in crate::types) fn resolve(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        ty: Type<'db>,
+    ) -> Type<'db> {
+        let replacements: Vec<_> = Self::collect(db, env, [ty])
+            .into_iter()
+            .map(|key| (key.reference(db), key.solution(db).ty))
+            .collect();
+        ty.apply_type_mapping(
+            db,
+            env,
+            &TypeMapping::Recursive(RecursiveMapping(RecursiveSubstitution::Replace(
+                &replacements,
+            ))),
+            TypeContext::default(),
+        )
+    }
+
     /// Collect query references without traversing their defining equations.
     pub(in crate::types) fn collect(
         db: &'db dyn Db,

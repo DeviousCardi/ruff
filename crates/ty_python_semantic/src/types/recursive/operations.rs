@@ -1,5 +1,7 @@
 //! Deferred operations on closed inference references.
 
+use ruff_python_ast::ExprContext;
+
 use super::RecursiveType;
 use crate::types::{PromotionKind, PromotionMode, Type, TypeContext, TypeMapping};
 use crate::{Db, ProgramEnvironment};
@@ -8,18 +10,19 @@ use crate::{Db, ProgramEnvironment};
 #[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
 pub struct RecursiveOperations<'db> {
     #[returns(ref)]
-    steps: Box<[RecursiveOperation]>,
+    steps: Box<[RecursiveOperation<'db>]>,
 }
 
 impl get_size2::GetSize for RecursiveOperations<'_> {}
 
 /// A deferred operation with the same parameters as its immediate type mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, get_size2::GetSize)]
-pub enum RecursiveOperation {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, get_size2::GetSize, salsa::SalsaValue)]
+pub enum RecursiveOperation<'db> {
     Promote(PromotionMode, PromotionKind),
+    Subscript(Type<'db>),
 }
 
-impl RecursiveOperation {
+impl RecursiveOperation<'_> {
     /// Whether this step can make an earlier operation effective again.
     /// Unknown combinations reset the earlier operation's idempotence guarantee.
     fn invalidates(self, earlier: Self) -> bool {
@@ -52,27 +55,29 @@ impl<'db> RecursiveOperations<'db> {
         mut ty: Type<'db>,
     ) -> Type<'db> {
         for step in self.steps(db) {
-            let RecursiveOperation::Promote(mode, kind) = *step;
-            ty = ty.apply_type_mapping(
-                db,
-                env,
-                &TypeMapping::Promote(mode, kind),
-                TypeContext::default(),
-            );
+            ty = match *step {
+                RecursiveOperation::Promote(mode, kind) => ty.apply_type_mapping(
+                    db,
+                    env,
+                    &TypeMapping::Promote(mode, kind),
+                    TypeContext::default(),
+                ),
+                RecursiveOperation::Subscript(index) => ty
+                    .subscript_impl(db, env, index, ExprContext::Load)
+                    .unwrap_or_else(|error| error.result_type()),
+            };
         }
         ty
     }
 }
 
 impl<'db> RecursiveType<'db> {
-    /// Defer promotion while retaining the input query and all earlier operations.
-    pub(super) fn with_promotion(
+    /// Defer an operation while retaining the input query and all earlier operations.
+    pub(in crate::types) fn with_operation(
         self,
         db: &'db dyn Db,
-        mode: PromotionMode,
-        kind: PromotionKind,
+        step: RecursiveOperation<'db>,
     ) -> Self {
-        let step = RecursiveOperation::Promote(mode, kind);
         let mut steps = self
             .operations(db)
             .map_or_else(Vec::new, |operations| operations.steps(db).to_vec());
